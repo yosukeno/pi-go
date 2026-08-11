@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wangy/pi-go/worktree"
+	"github.com/yosukeno/pi-go/worktree"
 )
 
 // DefaultSubagentTimeout bounds one delegated task.

@@ -14,17 +14,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/analyze"
-	"github.com/wangy/pi-go/config"
-	"github.com/wangy/pi-go/llm"
-	"github.com/wangy/pi-go/memory"
-	"github.com/wangy/pi-go/session"
-	"github.com/wangy/pi-go/skills"
-	"github.com/wangy/pi-go/tools"
-	"github.com/wangy/pi-go/tui"
-	"github.com/wangy/pi-go/web"
-	"github.com/wangy/pi-go/wire"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/analyze"
+	"github.com/yosukeno/pi-go/config"
+	"github.com/yosukeno/pi-go/llm"
+	"github.com/yosukeno/pi-go/memory"
+	"github.com/yosukeno/pi-go/session"
+	"github.com/yosukeno/pi-go/skills"
+	"github.com/yosukeno/pi-go/tools"
+	"github.com/yosukeno/pi-go/tui"
+	"github.com/yosukeno/pi-go/web"
+	"github.com/yosukeno/pi-go/wire"
 )
 
 // Flag descriptions are written as "English\n中文" and split by the help

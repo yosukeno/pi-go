@@ -1,4 +1,4 @@
-module github.com/wangy/pi-go
+module github.com/yosukeno/pi-go
 
 go 1.26.5
 

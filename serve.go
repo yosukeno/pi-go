@@ -13,11 +13,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wangy/pi-go/memory"
-	"github.com/wangy/pi-go/session"
-	"github.com/wangy/pi-go/skills"
-	"github.com/wangy/pi-go/tui"
-	"github.com/wangy/pi-go/web"
+	"github.com/yosukeno/pi-go/memory"
+	"github.com/yosukeno/pi-go/session"
+	"github.com/yosukeno/pi-go/skills"
+	"github.com/yosukeno/pi-go/tui"
+	"github.com/yosukeno/pi-go/web"
 )
 
 type webOptions struct {

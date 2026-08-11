@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/wangy/pi-go/llm"
+	"github.com/yosukeno/pi-go/llm"
 )
 
 // Compaction: replacing the conversation with a summary of it.

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wangy/pi-go/llm"
+	"github.com/yosukeno/pi-go/llm"
 )
 
 // newStore creates a session with the given user messages already appended.

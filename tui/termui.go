@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // termui.go is the richer terminal UI, built in two stages:

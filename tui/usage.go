@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/llm"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/llm"
 )
 
 // PrintUsage is the long form of usageLine, for /usage. It spells out where each

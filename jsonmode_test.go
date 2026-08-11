@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/llm"
-	"github.com/wangy/pi-go/wire"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/llm"
+	"github.com/yosukeno/pi-go/wire"
 )
 
 // events is one run's worth of loop events, including the shapes most likely to

@@ -18,8 +18,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/llm"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/llm"
 )
 
 // Type is the event name as it appears on the wire.

@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/wangy/pi-go/session"
+	"github.com/yosukeno/pi-go/session"
 )
 
 // SessionStats contains all computed statistics for a session.

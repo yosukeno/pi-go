@@ -3,7 +3,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 func emptyRegistry() *tools.Registry { return tools.NewRegistry() }

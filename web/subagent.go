@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // subagentReview lets a child's tool call be judged by this session's gate.

@@ -10,7 +10,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/wangy/pi-go/llm"
+	"github.com/yosukeno/pi-go/llm"
 )
 
 // Resolved is everything llm.New needs, plus the two figures the harness reads off

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // The chaining decision is the disposition table plus the run budget — and the

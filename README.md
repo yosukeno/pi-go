@@ -9,7 +9,7 @@
 需要 Go 1.26 以上。
 
 ```bash
-git clone <repo> && cd pi-go
+git clone https://github.com/yosukeno/pi-go.git && cd pi-go
 go build -o pi-go .
 ```
 

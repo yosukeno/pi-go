@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/wangy/pi-go/llm"
+import "github.com/yosukeno/pi-go/llm"
 
 // TurnPersister rebuilds a run's transcript from its event stream as it
 // happens, so a process killed mid-run loses only the in-flight turn rather

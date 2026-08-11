@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wangy/pi-go/worktree"
+	"github.com/yosukeno/pi-go/worktree"
 )
 
 // newRepo builds a real git repository in a temp directory.

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/wangy/pi-go/llm"
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/llm"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // LastInput and Usage().Input answer different questions and the difference is the

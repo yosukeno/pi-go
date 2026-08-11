@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wangy/pi-go/llm"
+	"github.com/yosukeno/pi-go/llm"
 )
 
 // A declared price reaches the resolved model. Nothing else in the file has to

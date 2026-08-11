@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/wangy/pi-go/agent"
+	"github.com/yosukeno/pi-go/agent"
 )
 
 // Mode is how much of the agent's work needs a human's eyes.

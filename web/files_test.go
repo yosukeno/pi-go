@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wangy/pi-go/llm"
+	"github.com/yosukeno/pi-go/llm"
 )
 
 // filesHarness builds the standard harness around an empty scripted model: the

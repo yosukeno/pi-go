@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/llm"
-	"github.com/wangy/pi-go/wire"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/llm"
+	"github.com/yosukeno/pi-go/wire"
 )
 
 // loopNames are the event names shared by every programmatic consumer. The list
@@ -27,12 +27,12 @@ var loopNames = []wire.Type{
 // would drag an embedded single-page app into a code path that only needs to
 // print lines, and splitting the binary later (#22) would start by undoing this.
 func TestEventPackageDoesNotImportWeb(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", "github.com/wangy/pi-go/wire").Output()
+	out, err := exec.Command("go", "list", "-deps", "github.com/yosukeno/pi-go/wire").Output()
 	if err != nil {
 		t.Skipf("go list unavailable: %v", err)
 	}
 	for _, dep := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if dep == "github.com/wangy/pi-go/web" {
+		if dep == "github.com/yosukeno/pi-go/web" {
 			t.Errorf("wire depends on web; the contract must not know about the browser")
 		}
 	}

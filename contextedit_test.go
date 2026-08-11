@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/config"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/config"
 )
 
 // "auto" is four fifths of the model's window, and the fifth it leaves has to cover

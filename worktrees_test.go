@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wangy/pi-go/worktree"
+	"github.com/yosukeno/pi-go/worktree"
 )
 
 func gitRun(t *testing.T, dir string, args ...string) {

@@ -5,9 +5,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/llm"
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/llm"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // mockClient is a simple test client that returns a fixed response

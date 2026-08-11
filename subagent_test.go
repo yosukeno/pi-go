@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // toolOptions is the fork point: one function decides what a top-level run gets and

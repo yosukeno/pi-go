@@ -1,6 +1,6 @@
 package session
 
-import "github.com/wangy/pi-go/llm"
+import "github.com/yosukeno/pi-go/llm"
 
 // BytesPerToken is re-exported so a reader of this file and of the report it
 // produces does not have to know which package owns the divisor. It is llm's,

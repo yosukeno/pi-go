@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/wangy/pi-go/tui"
-	"github.com/wangy/pi-go/worktree"
+	"github.com/yosukeno/pi-go/tui"
+	"github.com/yosukeno/pi-go/worktree"
 )
 
 // worktreeCommand implements -worktrees and -worktrees-prune.

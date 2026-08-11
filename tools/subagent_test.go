@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wangy/pi-go/worktree"
+	"github.com/yosukeno/pi-go/worktree"
 )
 
 // stub stands in for `pi-go -mode json`.

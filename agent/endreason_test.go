@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wangy/pi-go/llm"
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/llm"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // endOf returns the terminal event, failing if the run did not produce one.

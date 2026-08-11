@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wangy/pi-go/llm"
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/llm"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // big is text of a known size, so a test asserts token counts instead of ranges.

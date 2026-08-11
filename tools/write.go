@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 
-	"github.com/wangy/pi-go/diff"
+	"github.com/yosukeno/pi-go/diff"
 )
 
 type Write struct {

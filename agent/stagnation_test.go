@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wangy/pi-go/llm"
+	"github.com/yosukeno/pi-go/llm"
 )
 
 // TestDetectStagnation tests the stagnation detection logic

@@ -20,7 +20,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wangy/pi-go/llm"
+	"github.com/yosukeno/pi-go/llm"
 )
 
 type Record struct {

@@ -4,8 +4,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // childGate is the approval gate of a subagent process. It forwards every call to

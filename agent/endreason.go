@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/wangy/pi-go/llm"
+import "github.com/yosukeno/pi-go/llm"
 
 // EndReason is the harness's reason for ending a run.
 //

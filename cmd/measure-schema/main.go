@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 func main() {

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wangy/pi-go/agent"
+	"github.com/yosukeno/pi-go/agent"
 )
 
 // DefaultGateTimeout bounds how long a call waits for a human.

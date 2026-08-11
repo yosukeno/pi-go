@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/llm"
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/llm"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // Chained runs: reset, not compaction.

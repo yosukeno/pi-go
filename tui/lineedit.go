@@ -24,7 +24,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/wangy/pi-go/config"
+	"github.com/yosukeno/pi-go/config"
 )
 
 // Editor owns the input side of the prompt loop.

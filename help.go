@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/wangy/pi-go/tui"
+	"github.com/yosukeno/pi-go/tui"
 )
 
 // flagOrder groups the help output logically instead of alphabetically. Any flag

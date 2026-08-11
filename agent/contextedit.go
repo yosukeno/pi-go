@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/wangy/pi-go/llm"
+	"github.com/yosukeno/pi-go/llm"
 )
 
 // Context editing: dropping the payload of old tool results from the prompt while

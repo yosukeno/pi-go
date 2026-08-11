@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wangy/pi-go/config"
-	"github.com/wangy/pi-go/llm"
+	"github.com/yosukeno/pi-go/config"
+	"github.com/yosukeno/pi-go/llm"
 )
 
 // The behaviour this replaces, stated as what it was: -cost-budget was defined,

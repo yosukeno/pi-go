@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/wangy/pi-go/llm"
-	"github.com/wangy/pi-go/session"
+	"github.com/yosukeno/pi-go/llm"
+	"github.com/yosukeno/pi-go/session"
 )
 
 // subBuffer is how far one subscriber may fall behind before it is dropped.

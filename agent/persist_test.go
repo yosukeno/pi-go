@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/wangy/pi-go/llm"
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/llm"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // collectPersister runs a fake session, feeding every event to a persister

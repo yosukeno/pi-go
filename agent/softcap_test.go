@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wangy/pi-go/llm"
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/llm"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // alwaysTools scripts a client that asks for a tool call on every turn, so only

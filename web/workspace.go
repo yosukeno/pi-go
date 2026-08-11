@@ -12,8 +12,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/wangy/pi-go/diff"
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/diff"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // maxDiffSides caps the content fed into the differ; beyond it the changes

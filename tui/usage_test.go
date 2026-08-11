@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/llm"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/llm"
 )
 
 func TestUsageLineNamesItsUnitsAndShowsCacheAsAShare(t *testing.T) {

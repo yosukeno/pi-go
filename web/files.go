@@ -15,7 +15,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 const (

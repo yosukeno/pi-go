@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wangy/pi-go/llm"
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/llm"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // DefaultMaxTurns bounds a single Run. A model stuck in a tool-calling cycle

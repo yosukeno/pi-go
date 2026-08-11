@@ -4,8 +4,8 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/wangy/pi-go/config"
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/config"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // toolOptions decides which tools this process gets.

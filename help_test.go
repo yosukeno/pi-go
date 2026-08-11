@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/wangy/pi-go/tui"
+	"github.com/yosukeno/pi-go/tui"
 )
 
 func TestResolveCommand(t *testing.T) {

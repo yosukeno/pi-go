@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wangy/pi-go/llm"
-	"github.com/wangy/pi-go/session"
+	"github.com/yosukeno/pi-go/llm"
+	"github.com/yosukeno/pi-go/session"
 )
 
 // The composition crosses three boundaries between being computed and being read:

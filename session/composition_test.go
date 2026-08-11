@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wangy/pi-go/llm"
+	"github.com/yosukeno/pi-go/llm"
 )
 
 // text of exactly n bytes, so a test can assert token counts instead of ranges.

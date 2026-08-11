@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // A subagent's approval must not become a standing grant. The user approved one

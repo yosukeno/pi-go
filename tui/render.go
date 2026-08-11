@@ -6,9 +6,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/skills"
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/skills"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // Renderer is the terminal consumer of the loop's event stream. Swapping it for

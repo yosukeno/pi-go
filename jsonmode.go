@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/wire"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/wire"
 )
 
 // consumer turns the loop's event stream into output.

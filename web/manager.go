@@ -13,13 +13,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/config"
-	"github.com/wangy/pi-go/llm"
-	"github.com/wangy/pi-go/memory"
-	"github.com/wangy/pi-go/session"
-	"github.com/wangy/pi-go/skills"
-	"github.com/wangy/pi-go/tools"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/config"
+	"github.com/yosukeno/pi-go/llm"
+	"github.com/yosukeno/pi-go/memory"
+	"github.com/yosukeno/pi-go/session"
+	"github.com/yosukeno/pi-go/skills"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // Timeouts that replace "the client hung up" as the way a run ends.

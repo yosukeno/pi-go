@@ -3,7 +3,7 @@ package config
 import (
 	"strings"
 
-	"github.com/wangy/pi-go/llm"
+	"github.com/yosukeno/pi-go/llm"
 )
 
 // Provider is an OpenAI-compatible endpoint.

@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/config"
-	"github.com/wangy/pi-go/llm"
-	"github.com/wangy/pi-go/session"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/config"
+	"github.com/yosukeno/pi-go/llm"
+	"github.com/yosukeno/pi-go/session"
 )
 
 // Session is one conversation: an Agent, its transcript on disk, its event Hub,

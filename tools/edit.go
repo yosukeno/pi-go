@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/wangy/pi-go/diff"
+	"github.com/yosukeno/pi-go/diff"
 )
 
 // Edit does exact string replacement. It is the tool that decides whether a

@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wangy/pi-go/agent"
-	"github.com/wangy/pi-go/config"
-	"github.com/wangy/pi-go/session"
-	"github.com/wangy/pi-go/skills"
+	"github.com/yosukeno/pi-go/agent"
+	"github.com/yosukeno/pi-go/config"
+	"github.com/yosukeno/pi-go/session"
+	"github.com/yosukeno/pi-go/skills"
 	"nhooyr.io/websocket"
 )
 

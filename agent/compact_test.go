@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wangy/pi-go/llm"
+	"github.com/yosukeno/pi-go/llm"
 )
 
 // summariser is a client that records what the compaction call was given. The
