@@ -1245,23 +1245,124 @@ glm-5.2 原来在目录里写的是 200,000，**错了五倍**。厂商自己的
 
 ## Installation
 
-> 📝 **TODO**: translate from [## 安装](#安装).
+Requires Go 1.26+.
+
+```bash
+git clone https://github.com/yosukeno/pi-go.git && cd pi-go
+go build -o pi-go .
+```
+
+To install it into your `PATH` (make sure the target directory is on your `PATH`):
+
+```bash
+cd web/ui && npm run build && cd ../.. && go build -o ~/.local/bin/pi-go .
+```
 
 ## Configuration
 
-> 📝 **TODO**: translate from [## 配置](#配置).
+Keys are read **only** from environment variables — **no config file is read**.
+
+```bash
+export KIMI_API_KEY='sk-...'      # Kimi for Coding plan
+export ZHIPU_API_KEY='...'        # GLM Coding Plan
+```
+
+To make this permanent, prefer a dedicated file over editing `.zshrc` directly (`.zshrc` is often committed to a dotfiles repo or shared with others):
+
+```bash
+mkdir -p ~/.pi-go
+umask 077
+cat > ~/.pi-go/env.sh <<'EOF'
+export KIMI_API_KEY='sk-...'
+export ZHIPU_API_KEY='...'
+EOF
+chmod 600 ~/.pi-go/env.sh
+
+echo '[ -f "$HOME/.pi-go/env.sh" ] && source "$HOME/.pi-go/env.sh"' >> ~/.zshrc
+```
+
+Configuring only one provider works fine; models from the other provider will simply show up as `not set` under `-models`.
 
 ## Quick Start
 
-> 📝 **TODO**: translate from [## 快速开始](#快速开始).
+```bash
+pi-go -p "count how many lines of Go code are in the current directory"
+```
+
+Without `-p`, you drop into interactive mode:
+
+```bash
+$ pi-go
+pi-go  model=glm-5.2 (zhipu)  cwd=/path/to/project
+session /Users/you/.pi-go/sessions/20260802T120000Z-a1b2c3d4.jsonl
+/help lists commands (Tab completes them), /exit to quit
+
+> change the timeout in config.go from 30s to 60s
+```
 
 ## Two Run Modes
 
-> 📝 **TODO**: translate from [## 两种运行模式](#两种运行模式).
+The fork happens only at the final step of startup. Both modes share the same agent instance, the same loop, and the same renderer. The only difference is who supplies the prompt and how many times the loop is called.
+
+**One-shot mode** — anything with a prompt takes this path; it runs once and exits. The prompt can come from `-p` or from a pipe:
+
+```bash
+pi-go -p "where is the entry point of this project"
+
+# piped content as data, -p as the instruction
+cat meeting-notes.md | pi-go -p "extract action items and call out owners"
+git diff | pi-go -p "review this diff, only flag problems"
+
+# pipe with no -p: the piped content itself is the prompt
+echo "explain when Go's defer runs" | pi-go
+```
+
+The piped content is placed **before** the instruction, separated by a blank line. The instruction comes last, where the model pays the most attention to it.
+
+**Interactive mode** — entered when stdin is a TTY and there is no prompt. It reads line by line, each line a prompt, with context accumulating.
+
+Note: piped input **always triggers one-shot mode** and never enters the REPL. Otherwise the piped file would be fed line by line as a sequence of prompts.
 
 ## Command-Line Flags
 
-> 📝 **TODO**: translate from [## 命令行参数](#命令行参数).
+`pi-go -h` prints the full bilingual help (flags, interactive commands, environment variables, examples).
+
+| Flag | Description |
+|---|---|
+| `-p <prompt>` | Run a single prompt and exit |
+| `-model <name>` | Model id or alias; default `glm-5.2` |
+| `-models` | List known models and exit |
+| `-C <dir>` | Working directory; default is the current directory |
+| `-resume <last\|path>` | Resume a session: `last` or a path to a `.jsonl` file |
+| `-mode <text\|json>` | Output mode, default `text`; `json` makes stdout emit one event per line (see next section) |
+| `-quiet` | Hide thinking and tool output, keep only the final answer |
+| `-max-turns <n>` | Turn cap for a single run; default 50 |
+| `-soft-turns <n>` | Insert a checkpoint every n turns (the model is told its progress, then either wraps up or states what's left) instead of running silently to the cap. Default 10, 0 disables; never triggers when ≥ `-max-turns`. Always off for web sessions |
+| `-max-runs <n>` | Let a task span up to n runs (`-p` only): on hitting a continue-class limit, fork the session and let a new run pick up from `.pi-go/handoff.md` (see "Chained runs"). Default 1, i.e. a single run |
+| `-evaluate` | Run a fresh read-only evaluator before accepting the result (`-p` only): claims of "done" that fail verification hand off findings to the next leg; if runs are exhausted but live verifications still pass, it still counts as success (see "Chained runs") |
+| `-retries <n>` | Retry count per LLM call; default 3, `-1` disables |
+| `-token-budget <n>` | Token cap for this run; 0 disables. Delegated work counts too. Counts input+output; **does not double-count** cache_read (a subset of input) or reasoning (a subset of output) |
+| `-cost-budget <f>` | Spend cap for this run, in the same unit as the model's declared price; 0 disables. **Requires `price` to be declared for that model in providers.json, otherwise startup is refused** (see below) |
+| `-time-budget <dur>` | Wall-clock cap for this run; 0 disables |
+| `-stagnation-threshold <n>` | How many consecutive turns producing identical tool results count as spinning; default 3 |
+| `-analyze-session <path>` | Analyze a transcript and exit (see "Context composition"); pass a directory or the literal `sessions` to report the turn distribution across all its runs (see "Turn distribution") |
+| `-analyze-format <text\|json>` | Output format for `-analyze-session`; default `text` |
+| `-analyze-output <path>` | Write the analysis to a file instead of stdout |
+| `-sessions` | List saved sessions and exit |
+| `-skills` | List discovered skills and exit |
+| `-skill <path>` | Load a skill from the given path (file or directory); repeatable |
+| `-no-skills` | Do not scan default skill directories (`-skill` ones still load) |
+| `-project-skills` | Also load `./.pi-go/skills`; off by default |
+| `-memory` | Print the agent's memory notes and exit |
+| `-no-memory` | Do not give the agent a memory directory |
+| `-project-memory` | Also use `./.pi-go/memory`; off by default |
+| `-worktrees` | List isolated worktrees of this repo and exit |
+| `-worktrees-prune` | Clean up isolated worktrees with no unsaved changes and no live process holding them; exit |
+| `-web` | Launch the browser UI (see section below) |
+| `-listen <addr>` | Listen address for `-web`; default `127.0.0.1:7777` |
+| `-gate-timeout <dur>` | How long a tool call waits for human approval; default 5m, timeout is treated as denied |
+| `-context-edit <auto\|off\|n>` | Discard older tool output once the prompt exceeds this size; default `auto` (four-fifths of the model window). See "Context cleaning" |
+| `-web-dev <url>` | Reverse-proxy non-API routes to a vite dev server |
 
 ## JSON Output: `-mode json`
 
