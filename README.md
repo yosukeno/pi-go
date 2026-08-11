@@ -2,6 +2,11 @@
 
 # pi-go
 
+[![CI](https://github.com/yosukeno/pi-go/actions/workflows/ci.yml/badge.svg)](https://github.com/yosukeno/pi-go/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/yosukeno/pi-go)](https://goreportcard.com/report/github.com/yosukeno/pi-go)
+[![License](https://img.shields.io/github/license/yosukeno/pi-go?color=blue)](LICENSE)
+[![Go Version](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev)
+
 **简体中文** | [English](#english)
 
 用 Go 写的极简 coding agent，对标 [pi](https://github.com/earendil-works/pi) 的 harness 设计。
@@ -10,7 +15,8 @@
 
 ## 联系方式
 
-扫码加作者微信交流：
+- 邮箱：<a href="mailto:wycc2077@qq.com">wycc2077@qq.com</a>
+- 微信：扫码加作者交流
 
 <p align="center">
   <img src="assets/wechat-qr.jpg" alt="作者微信二维码" width="240" />
@@ -1230,7 +1236,8 @@ glm-5.2 原来在目录里写的是 200,000，**错了五倍**。厂商自己的
 
 ## Contact
 
-Scan to add the author on WeChat:
+- Email: <a href="mailto:wycc2077@qq.com">wycc2077@qq.com</a>
+- WeChat: scan to add the author
 
 <p align="center">
   <img src="assets/wechat-qr.jpg" alt="Author WeChat QR code" width="240" />
