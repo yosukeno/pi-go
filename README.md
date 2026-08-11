@@ -4,6 +4,14 @@
 
 一个 loop、九个工具、一种协议。**除浏览器终端外零第三方依赖**：`creack/pty` 和 `nhooyr.io/websocket` 只服务浏览器终端那条路径（`web/terminal.go` 加 `server.go` 里的升级处），其余全部是 stdlib。
 
+## 联系方式
+
+扫码加作者微信交流：
+
+<p align="center">
+  <img src="assets/wechat-qr.jpg" alt="作者微信二维码" width="240" />
+</p>
+
 ## 安装
 
 需要 Go 1.26 以上。
