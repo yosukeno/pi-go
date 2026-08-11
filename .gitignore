@@ -1,0 +1,21 @@
+apiKey.txt
+*.key
+.env
+
+# Compiled binaries. The root one is the main build output; web/pi-go is a
+# stray copy that turned out to be an ar archive. Both are build artifacts.
+/pi-go
+/web/pi-go
+
+web/ui/node_modules/
+
+# OS / editor cruft.
+.DS_Store
+*.swp
+
+# Local agent tooling settings (personal permissions, not portable).
+.claude/
+
+# web/ui/dist is deliberately NOT ignored: it is embedded into the binary, so a
+# checkout has to contain it for `go build` to work. Rebuild it with
+# `cd web/ui && npm run build` whenever the front end changes.

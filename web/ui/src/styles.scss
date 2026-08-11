@@ -1,0 +1,104 @@
+:root {
+  color-scheme: light;
+
+  /* The whole UI is black & white by decision: Element's blue primary ramp is
+     rewritten to a greyscale one, so every place styling against
+     --el-color-primary (active session bar, send button, focus rings, live
+     dots, checks, links) follows at once. Semantic colours (warning / danger /
+     success) are left alone — they carry meaning, not decoration. */
+  --el-color-primary: #1a1a1a;
+  --el-color-primary-light-3: #5f5f5f;
+  --el-color-primary-light-5: #8d8d8d;
+  --el-color-primary-light-7: #bababa;
+  --el-color-primary-light-8: #d1d1d1;
+  --el-color-primary-light-9: #e8e8e8;
+  --el-color-primary-dark-2: #000000;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  color: var(--el-text-color-primary);
+  background: var(--el-bg-color);
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--el-border-color);
+  border-radius: 5px;
+
+  &:hover {
+    background: var(--el-border-color-darker);
+  }
+}
+
+/* Fast hover tooltip, replacing the native title= bubble: the OS tooltip
+   takes over a second to appear and cannot be styled. Usage: class="tip" plus
+   data-tip="…". Binding the attribute to undefined suppresses the tooltip,
+   which is how an open popover keeps its trigger quiet. */
+.tip {
+  position: relative;
+
+  &::before,
+  &::after {
+    position: absolute;
+    left: 50%;
+    z-index: 3000;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+  }
+
+  &::after {
+    content: attr(data-tip);
+    bottom: calc(100% + 8px);
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: 280px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: rgba(20, 20, 20, 0.92);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+    color: #fff;
+    font-family:
+      -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+      "Microsoft YaHei", sans-serif;
+    font-size: 11px;
+    font-weight: 400;
+    line-height: 1.45;
+    text-align: left;
+    white-space: normal;
+  }
+
+  &::before {
+    content: "";
+    bottom: calc(100% + 3px);
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+    border-bottom: 0;
+    border-top-color: rgba(20, 20, 20, 0.92);
+  }
+
+  &[data-tip]:hover::before,
+  &[data-tip]:hover::after {
+    opacity: 1;
+  }
+}

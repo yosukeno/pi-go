@@ -1,0 +1,34 @@
+{
+  "name": "pi-go-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "check": "vue-tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "2.3.2",
+    "@iconify/vue": "^5.0.1",
+    "@vueuse/core": "14.4.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "^6.0.0",
+    "element-plus": "2.14.3",
+    "markdown-it": "15.0.0",
+    "vue": "3.5.40",
+    "vue-i18n": "^11.4.8"
+  },
+  "devDependencies": {
+    "@iconify-json/vscode-icons": "^1.2.70",
+    "@types/markdown-it": "14.1.2",
+    "@types/node": "^24.10.1",
+    "@vitejs/plugin-vue": "6.0.8",
+    "sass": "1.102.0",
+    "typescript": "5.9.3",
+    "vite": "8.2.0",
+    "vitest": "4.1.10",
+    "vue-tsc": "3.3.9"
+  }
+}

@@ -1,0 +1,242 @@
+id: 0
+event: snapshot
+data: {"seq":0,"type":"snapshot","ts":1785737324337,"snapshot":{"seq":0,"messages":[],"results":{},"live":{"active":false,"pending_tools":[],"pending_gates":[]},"run":{"active":false,"model":"k3","provider":"kimi","context_window":1048576},"policy":{"mode":"standard"},"usage":{"input":0,"output":0},"context_tokens":0}}
+
+id: 1
+event: run_start
+data: {"seq":1,"type":"run_start","ts":1785737329408,"run_id":"a9a637f2","model":"k3","provider":"kimi"}
+
+id: 2
+event: user_message
+data: {"seq":2,"type":"user_message","ts":1785737329408,"message_id":"u1","role":"user","text":"把 config.go 里的超时从 30s 改成 60s（用 edit 工具），然后用 bash 跑 gofmt -l . 确认格式没问题。最后一句话总结。"}
+
+id: 3
+event: turn_start
+data: {"seq":3,"type":"turn_start","ts":1785737329408,"turn":1,"message_id":"m2"}
+
+id: 4
+event: thinking
+data: {"seq":4,"type":"thinking","ts":1785737331871,"message_id":"m2","text":"Let"}
+
+id: 5
+event: thinking
+data: {"seq":5,"type":"thinking","ts":1785737331872,"message_id":"m2","text":" me"}
+
+id: 6
+event: thinking
+data: {"seq":6,"type":"thinking","ts":1785737331872,"message_id":"m2","text":" look"}
+
+id: 7
+event: thinking
+data: {"seq":7,"type":"thinking","ts":1785737331872,"message_id":"m2","text":" at"}
+
+id: 8
+event: thinking
+data: {"seq":8,"type":"thinking","ts":1785737331872,"message_id":"m2","text":" config"}
+
+id: 9
+event: thinking
+data: {"seq":9,"type":"thinking","ts":1785737331872,"message_id":"m2","text":".go"}
+
+id: 10
+event: thinking
+data: {"seq":10,"type":"thinking","ts":1785737331872,"message_id":"m2","text":" first"}
+
+id: 11
+event: thinking
+data: {"seq":11,"type":"thinking","ts":1785737331872,"message_id":"m2","text":"."}
+
+id: 12
+event: gate_auto
+data: {"seq":12,"type":"gate_auto","ts":1785737332615,"call_id":"tool_DkSTzQDjcoEHn6A4jRxourER","name":"read","rule":"policy:standard"}
+
+id: 13
+event: message
+data: {"seq":13,"type":"message","ts":1785737332615,"message_id":"m2","role":"assistant","content":[{"type":"thinking","text":"Let me look at config.go first."},{"type":"tool_use","id":"tool_DkSTzQDjcoEHn6A4jRxourER","name":"read","input":{"path":"/tmp/w5/config.go"}}],"usage":{"input":866,"output":63,"reasoning":9}}
+
+id: 14
+event: tool_start
+data: {"seq":14,"type":"tool_start","ts":1785737332615,"call_id":"tool_DkSTzQDjcoEHn6A4jRxourER","name":"read","args":{"path":"/tmp/w5/config.go"}}
+
+id: 15
+event: tool_end
+data: {"seq":15,"type":"tool_end","ts":1785737332615,"text":"package main\n\nimport \"time\"\n\n// Timeout bounds a single request.\nconst Timeout = 30 * time.Second\n\nfunc main() { _ = Timeout }\n","call_id":"tool_DkSTzQDjcoEHn6A4jRxourER","name":"read","details":{"path":"/tmp/w5/config.go","total_lines":9,"shown_lines":8,"first_line":1}}
+
+id: 16
+event: turn_start
+data: {"seq":16,"type":"turn_start","ts":1785737332615,"turn":2,"message_id":"m3"}
+
+id: 17
+event: gate_auto
+data: {"seq":17,"type":"gate_auto","ts":1785737337177,"call_id":"tool_WJBCcs8GowRgjgkhKqRKuWA3","name":"edit","rule":"policy:standard"}
+
+id: 18
+event: message
+data: {"seq":18,"type":"message","ts":1785737337177,"message_id":"m3","role":"assistant","content":[{"type":"tool_use","id":"tool_WJBCcs8GowRgjgkhKqRKuWA3","name":"edit","input":{"path":"/tmp/w5/config.go","edits":[{"oldText":"const Timeout = 30 * time.Second","newText":"const Timeout = 60 * time.Second"}]}}],"usage":{"input":978,"output":96,"cache_read":768,"reasoning":1}}
+
+id: 19
+event: tool_start
+data: {"seq":19,"type":"tool_start","ts":1785737337177,"call_id":"tool_WJBCcs8GowRgjgkhKqRKuWA3","name":"edit","args":{"path":"/tmp/w5/config.go","edits":[{"oldText":"const Timeout = 30 * time.Second","newText":"const Timeout = 60 * time.Second"}]}}
+
+id: 20
+event: tool_end
+data: {"seq":20,"type":"tool_end","ts":1785737337178,"text":"Successfully replaced 1 block(s) in /tmp/w5/config.go","call_id":"tool_WJBCcs8GowRgjgkhKqRKuWA3","name":"edit","details":{"path":"/tmp/w5/config.go","edits":1,"diff":" 2 \n 3 import \"time\"\n 4 \n 5 // Timeout bounds a single request.\n-6 const Timeout = 30 * time.Second\n+6 const Timeout = 60 * time.Second\n 7 \n 8 func main() { _ = Timeout }","patch":"--- a//tmp/w5/config.go\n+++ b//tmp/w5/config.go\n@@ -2,7 +2,7 @@\n \n import \"time\"\n \n // Timeout bounds a single request.\n-const Timeout = 30 * time.Second\n+const Timeout = 60 * time.Second\n \n func main() { _ = Timeout }\n","first_changed_line":6,"added":1,"removed":1}}
+
+id: 21
+event: turn_start
+data: {"seq":21,"type":"turn_start","ts":1785737337178,"turn":3,"message_id":"m4"}
+
+id: 22
+event: message
+data: {"seq":22,"type":"message","ts":1785737342002,"message_id":"m4","role":"assistant","content":[{"type":"tool_use","id":"tool_Ka0m7qD9C1pXgzAvOYzwwUL9","name":"bash","input":{"command":"gofmt -l ."}}],"usage":{"input":1114,"output":56,"cache_read":768,"reasoning":1}}
+
+id: 23
+event: gate_request
+data: {"seq":23,"type":"gate_request","ts":1785737342002,"call_id":"tool_Ka0m7qD9C1pXgzAvOYzwwUL9","name":"bash","args":{"command":"gofmt -l ."},"gate_id":"g1","deadline":1785737432002}
+
+:
+
+:
+
+id: 24
+event: gate_resolved
+data: {"seq":24,"type":"gate_resolved","ts":1785737370416,"call_id":"tool_Ka0m7qD9C1pXgzAvOYzwwUL9","gate_id":"g1","allow":true,"by":"user"}
+
+id: 25
+event: tool_start
+data: {"seq":25,"type":"tool_start","ts":1785737370417,"call_id":"tool_Ka0m7qD9C1pXgzAvOYzwwUL9","name":"bash","args":{"command":"gofmt -l ."}}
+
+id: 26
+event: tool_end
+data: {"seq":26,"type":"tool_end","ts":1785737370428,"text":"(no output)","call_id":"tool_Ka0m7qD9C1pXgzAvOYzwwUL9","name":"bash","details":{"command":"gofmt -l .","exit_code":0,"duration_ms":11}}
+
+id: 27
+event: turn_start
+data: {"seq":27,"type":"turn_start","ts":1785737370428,"turn":4,"message_id":"m5"}
+
+id: 28
+event: token
+data: {"seq":28,"type":"token","ts":1785737374685,"message_id":"m5","text":"已将"}
+
+id: 29
+event: token
+data: {"seq":29,"type":"token","ts":1785737374685,"message_id":"m5","text":" config"}
+
+id: 30
+event: token
+data: {"seq":30,"type":"token","ts":1785737374685,"message_id":"m5","text":".go"}
+
+id: 31
+event: token
+data: {"seq":31,"type":"token","ts":1785737374685,"message_id":"m5","text":" "}
+
+id: 32
+event: token
+data: {"seq":32,"type":"token","ts":1785737374687,"message_id":"m5","text":"中的"}
+
+id: 33
+event: token
+data: {"seq":33,"type":"token","ts":1785737374687,"message_id":"m5","text":"超时"}
+
+id: 34
+event: token
+data: {"seq":34,"type":"token","ts":1785737374687,"message_id":"m5","text":"从"}
+
+id: 35
+event: token
+data: {"seq":35,"type":"token","ts":1785737374687,"message_id":"m5","text":" "}
+
+id: 36
+event: token
+data: {"seq":36,"type":"token","ts":1785737375171,"message_id":"m5","text":"30"}
+
+id: 37
+event: token
+data: {"seq":37,"type":"token","ts":1785737375171,"message_id":"m5","text":"s"}
+
+id: 38
+event: token
+data: {"seq":38,"type":"token","ts":1785737375171,"message_id":"m5","text":" "}
+
+id: 39
+event: token
+data: {"seq":39,"type":"token","ts":1785737375171,"message_id":"m5","text":"改为"}
+
+id: 40
+event: token
+data: {"seq":40,"type":"token","ts":1785737375171,"message_id":"m5","text":" "}
+
+id: 41
+event: token
+data: {"seq":41,"type":"token","ts":1785737375171,"message_id":"m5","text":"60"}
+
+id: 42
+event: token
+data: {"seq":42,"type":"token","ts":1785737375171,"message_id":"m5","text":"s"}
+
+id: 43
+event: token
+data: {"seq":43,"type":"token","ts":1785737375171,"message_id":"m5","text":"，"}
+
+id: 44
+event: token
+data: {"seq":44,"type":"token","ts":1785737375171,"message_id":"m5","text":"g"}
+
+id: 45
+event: token
+data: {"seq":45,"type":"token","ts":1785737375171,"message_id":"m5","text":"of"}
+
+id: 46
+event: token
+data: {"seq":46,"type":"token","ts":1785737375171,"message_id":"m5","text":"mt"}
+
+id: 47
+event: token
+data: {"seq":47,"type":"token","ts":1785737375171,"message_id":"m5","text":" -"}
+
+id: 48
+event: token
+data: {"seq":48,"type":"token","ts":1785737375325,"message_id":"m5","text":"l"}
+
+id: 49
+event: token
+data: {"seq":49,"type":"token","ts":1785737375325,"message_id":"m5","text":" ."}
+
+id: 50
+event: token
+data: {"seq":50,"type":"token","ts":1785737375325,"message_id":"m5","text":" "}
+
+id: 51
+event: token
+data: {"seq":51,"type":"token","ts":1785737375325,"message_id":"m5","text":"无"}
+
+id: 52
+event: token
+data: {"seq":52,"type":"token","ts":1785737375325,"message_id":"m5","text":"输出"}
+
+id: 53
+event: token
+data: {"seq":53,"type":"token","ts":1785737375325,"message_id":"m5","text":"，"}
+
+id: 54
+event: token
+data: {"seq":54,"type":"token","ts":1785737375325,"message_id":"m5","text":"格式"}
+
+id: 55
+event: token
+data: {"seq":55,"type":"token","ts":1785737375326,"message_id":"m5","text":"没有问题"}
+
+id: 56
+event: token
+data: {"seq":56,"type":"token","ts":1785737375326,"message_id":"m5","text":"。"}
+
+id: 57
+event: message
+data: {"seq":57,"type":"message","ts":1785737375338,"message_id":"m5","role":"assistant","content":[{"type":"text","text":"已将 config.go 中的超时从 30s 改为 60s，gofmt -l . 无输出，格式没有问题。"}],"usage":{"input":1199,"output":45,"cache_read":1024,"reasoning":1}}
+
+id: 58
+event: run_end
+data: {"seq":58,"type":"run_end","ts":1785737375338,"stop_reason":"end_turn","usage":{"input":4157,"output":260,"cache_read":2560,"reasoning":12}}
+
+:
+

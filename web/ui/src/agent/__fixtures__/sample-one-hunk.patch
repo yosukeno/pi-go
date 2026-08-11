@@ -1,0 +1,15 @@
+--- a/main.go
++++ b/main.go
+@@ -1,7 +1,10 @@
+ package main
+ 
+-import "fmt"
++import (
++	"fmt"
++	"os"
++)
+ 
+ func main() {
+-	fmt.Println("hello")
++	fmt.Println("hello", os.Args)
+ }

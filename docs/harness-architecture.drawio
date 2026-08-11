@@ -1,0 +1,256 @@
+<mxfile host="app.diagrams.net" agent="pi-go-review" version="24.0.0">
+  <diagram name="pi-go harness v3" id="pigo-harness-v3">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="1260" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="pi-go Harness 架构 v3（24,929 行含测试 / 14,832 实现 · 零三方依赖 · loop.go 871 行 · 7+1 个工具）" style="text;html=1;fontSize=18;fontStyle=1;align=center;" vertex="1" parent="1">
+          <mxGeometry x="240" y="8" width="720" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- ============ LEFT COLUMN ============ -->
+        <!-- Faces layer -->
+        <mxCell id="faces" value="界面层 Faces（root 包 2368 行：main 1294 · lineedit 464 · help 149 · serve 144 · jsonmode 79 · gatefd/subagent/worktrees）— 每个界面都只是 agent.Event 的消费者" style="swimlane;html=1;startSize=26;fontSize=12;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="40" y="46" width="700" height="122" as="geometry" />
+        </mxCell>
+        <mxCell id="faceP" value="pi-go -p &quot;...&quot;&#10;一次性模式&#10;-mode text|json" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="faces">
+          <mxGeometry x="15" y="40" width="120" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="faceRepl" value="REPL（lineedit：stty raw&#10;Tab 补全 · 历史 · 宽字符）&#10;/model /models /usage /skills&#10;/skill:&lt;name&gt; /help /exit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="faces">
+          <mxGeometry x="145" y="34" width="160" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="facePipe" value="stdin 管道&#10;char-device 检测&#10;内容置于 -p 之前" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="faces">
+          <mxGeometry x="315" y="40" width="105" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="faceCmd" value="即时命令（执行后退出）&#10;-models / -sessions&#10;-worktrees(-prune)&#10;-analyze-session" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="faces">
+          <mxGeometry x="430" y="34" width="125" height="74" as="geometry" />
+        </mxCell>
+        <mxCell id="faceWeb" value="pi-go -web&#10;浏览器 UI（HTTP/SSE）&#10;前端已落地（见右）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontStyle=1;fontSize=11;" vertex="1" parent="faces">
+          <mxGeometry x="565" y="40" width="125" height="62" as="geometry" />
+        </mxCell>
+
+        <!-- Agent layer -->
+        <mxCell id="agentLayer" value="agent 包 — The Loop（1155 行：loop.go 871 · event.go 169 · gate.go 56 · prompt.go 59）" style="swimlane;html=1;startSize=26;fontSize=13;fontStyle=1;fillColor=#ffe6cc;strokeColor=#d79b00;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="40" y="184" width="700" height="326" as="geometry" />
+        </mxCell>
+        <mxCell id="loopStart" value="Run(ctx, prompt)&#10;追加 user 消息&#10;→ chan Event&#10;每轮先注入 steer 消息" style="ellipse;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="agentLayer">
+          <mxGeometry x="15" y="40" width="140" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="loopStream" value="client.Stream(&#10;systemPrompt,&#10;messages, schemas)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="agentLayer">
+          <mxGeometry x="185" y="40" width="130" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="loopCheck" value="toolCalls?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="agentLayer">
+          <mxGeometry x="365" y="40" width="100" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="loopReply" value="无 → agent_end&#10;回复用户&#10;（steer 未空则继续）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="agentLayer">
+          <mxGeometry x="520" y="40" width="125" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="loopGate" value="ToolGate 钩子（可选）&#10;Review(ctx, req) → 放行 / 拒绝 /&#10;改参（Args=编辑后批准）&#10;req.Origin 标记 subagent 来源&#10;拒绝=tool result 回传，不中断&#10;终端为 nil；web / 子进程注入" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="agentLayer">
+          <mxGeometry x="15" y="140" width="210" height="106" as="geometry" />
+        </mxCell>
+        <mxCell id="loopExec" value="批量执行&#10;· 任一 Sequential（含未知工具）→ 整批串行&#10;  否则信号量并行（≤8）&#10;· 并行批先串行过审批（reviewBudget）&#10;· 每个 tool_use 必有 result：取消 / 拒绝 /&#10;  max_tokens 截断 都 settle 补齐&#10;· StreamingTool → tool_partial 增量&#10;· 子 agent token 计入 delegated usage" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="agentLayer">
+          <mxGeometry x="245" y="140" width="285" height="106" as="geometry" />
+        </mxCell>
+        <mxCell id="loopGuard" value="护栏&#10;maxTurns=50&#10;token / time 预算&#10;停滞检测：工具结果&#10;哈希连续相同即停&#10;ctx 全链路取消" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="agentLayer">
+          <mxGeometry x="550" y="140" width="135" height="106" as="geometry" />
+        </mxCell>
+        <mxCell id="loopEvents" value="事件流：agent_start / turn_start / text_delta / thinking_delta / message / tool_start / tool_partial / tool_end / steer / agent_end（携 usage · timing · overhead 指标）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="agentLayer">
+          <mxGeometry x="15" y="262" width="670" height="44" as="geometry" />
+        </mxCell>
+
+        <!-- Tools layer -->
+        <mxCell id="toolsLayer" value="tools 包 — 7+1 个工具（3667 行实现）· Result{Text→模型, Details→UI} 分离 · pathlock 全局文件锁（跨会话串行化同一文件）" style="swimlane;html=1;startSize=26;fontSize=12;fontStyle=1;fillColor=#e1d5e7;strokeColor=#9673a6;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="40" y="526" width="700" height="248" as="geometry" />
+        </mxCell>
+        <mxCell id="toolRead" value="read&#10;offset/limit 分页&#10;头部截断&#10;(2000 行 / 50KB)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="toolsLayer">
+          <mxGeometry x="15" y="40" width="115" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="toolLs" value="ls&#10;单层列目录&#10;500 条上限" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="toolsLayer">
+          <mxGeometry x="140" y="40" width="105" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="toolFind" value="find&#10;glob 找文件&#10;200 上限 · 跳&#10;.git/node_modules" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="toolsLayer">
+          <mxGeometry x="255" y="40" width="105" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="toolGrep" value="grep&#10;Go 正则搜内容&#10;100 匹配上限" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="toolsLayer">
+          <mxGeometry x="370" y="40" width="110" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="toolRoots" value="只读四件套全部 Parallel&#10;Roots 白名单：&#10;cwd + skill 目录&#10;（拒绝对路径逃逸）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontColor=#333333;" vertex="1" parent="toolsLayer">
+          <mxGeometry x="495" y="40" width="190" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="toolWrite" value="write&#10;整文件覆写 · pathlock&#10;覆写生成 diff(Details)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="toolsLayer">
+          <mxGeometry x="15" y="114" width="120" height="66" as="geometry" />
+        </mxCell>
+        <mxCell id="toolEdit" value="edit&#10;精确替换 · 唯一匹配&#10;CRLF 归一 · pathlock&#10;diff/patch(Details) 供 UI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontStyle=1;fontSize=11;" vertex="1" parent="toolsLayer">
+          <mxGeometry x="145" y="114" width="140" height="66" as="geometry" />
+        </mxCell>
+        <mxCell id="toolBash" value="bash — Sequential（串行化整批）&#10;bash -c · 默认 120s 超时 · 进程组杀&#10;尾部截断 · 超长落临时文件 · Guard 钩子" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="toolsLayer">
+          <mxGeometry x="295" y="114" width="175" height="66" as="geometry" />
+        </mxCell>
+        <mxCell id="toolSubagent" value="subagent — 委派子 pi-go 进程&#10;explore 只读 / edit worktree 隔离&#10;深度 ≤1 · 并发 ≤2 · 10min 超时&#10;子进程事件流实时回流(ToolFrame)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontStyle=1;fontSize=11;" vertex="1" parent="toolsLayer">
+          <mxGeometry x="480" y="114" width="205" height="66" as="geometry" />
+        </mxCell>
+        <mxCell id="toolSupport" value="支撑：stream.go StreamingTool（bash / subagent）· gatechan.go 父子审批 fd 协议 · guard.go 子 agent 禁 git · schema.go struct tag 反射 + validate.go 参数校验 · search.go find/grep 共享遍历" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;fontColor=#333333;" vertex="1" parent="toolsLayer">
+          <mxGeometry x="15" y="194" width="670" height="42" as="geometry" />
+        </mxCell>
+
+        <!-- LLM layer -->
+        <mxCell id="llmLayer" value="llm 包 — 唯一懂线协议的层（858 行）· Client 接口 · 手写 OpenAI chat-completions（reasoning_content / cached_tokens 在官方 schema 之外）" style="swimlane;html=1;startSize=26;fontSize=12;fontStyle=1;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="40" y="790" width="700" height="142" as="geometry" />
+        </mxCell>
+        <mxCell id="llmConvert" value="convert.go&#10;中性 Message/Block → wire&#10;tool result 展开为 role:tool&#10;thinking 不回放&#10;Details 永不上线（测试钉住）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="llmLayer">
+          <mxGeometry x="20" y="42" width="165" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="llmStream" value="openai.go 手写 SSE&#10;tool_calls 按 index 累积碎片&#10;reasoning_content 思考通道&#10;stream_options 带回 usage&#10;（含 cached / reasoning tokens）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="llmLayer">
+          <mxGeometry x="205" y="42" width="195" height="86" as="geometry" />
+        </mxCell>
+        <mxCell id="llmRetry" value="retry.go&#10;指数退避 + 负 jitter&#10;408/409/429/5xx&#10;尊重 Retry-After /&#10;x-should-retry&#10;dirty 守卫：已输出增量&#10;后不重放请求" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="llmLayer">
+          <mxGeometry x="430" y="42" width="165" height="86" as="geometry" />
+        </mxCell>
+
+        <!-- External providers -->
+        <mxCell id="extLayer" value="外部服务（OpenAI 兼容端点）· config 包 493 行：密钥只读环境变量 + ~/.pi-go/providers.json（刻意不读 cwd，防仓库投毒）· subagent_model 可单独指定" style="swimlane;html=1;startSize=26;fontSize=12;fontStyle=1;fillColor=#f8cecc;strokeColor=#b85450;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="40" y="948" width="700" height="116" as="geometry" />
+        </mxCell>
+        <mxCell id="extZhipu" value="智谱 GLM Coding Plan&#10;open.bigmodel.cn/api/coding/paas/v4&#10;glm-5.2（默认，200K ctx）· ZHIPU_API_KEY" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b85450;fontSize=11;" vertex="1" parent="extLayer">
+          <mxGeometry x="30" y="38" width="300" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="extKimi" value="Kimi for Coding&#10;api.kimi.com/coding/v1&#10;k3（1M ctx）/ k3-256k / k2.7(-fast) · KIMI_API_KEY" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b85450;fontSize=11;" vertex="1" parent="extLayer">
+          <mxGeometry x="370" y="38" width="300" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- ============ RIGHT COLUMN ============ -->
+        <!-- Web backend -->
+        <mxCell id="webLayer" value="web 包 — 服务器后端（2823 行）&#10;核心决策：run 的生命周期属于 session，不属于 HTTP 连接" style="swimlane;html=1;startSize=40;fontSize=13;fontStyle=1;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="780" y="46" width="380" height="476" as="geometry" />
+        </mxCell>
+        <mxCell id="webServer" value="server.go 667 — REST + SSE&#10;/api/sessions · /messages · /stream?from=seq&#10;/control：steer/cancel/set_model/set_policy/gate_*&#10;token 认证（恒定时间比较，不可关闭）&#10;Origin 校验（拒跨站，不开 CORS）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="webLayer">
+          <mxGeometry x="20" y="48" width="340" height="88" as="geometry" />
+        </mxCell>
+        <mxCell id="webManager" value="manager.go 443 — 会话注册表&#10;每 session 一个 Agent，单 run 互斥&#10;空闲会话驱逐（15min）· run 硬超时（30min）&#10;重启后从磁盘 JSONL 透明重建" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="webLayer">
+          <mxGeometry x="20" y="146" width="340" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="webRunner" value="runner.go 293 — run 生命周期&#10;Start / Steer / Cancel / finish&#10;finish：新消息 + stats 增量落盘&#10;auto 回合预算按 TurnStart 扣减" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="webLayer">
+          <mxGeometry x="20" y="226" width="340" height="62" as="geometry" />
+        </mxCell>
+        <mxCell id="webHub" value="hub.go 463 — 事件日志 + 派生态 + 扇出&#10;snapshot 与 live stream 同源（同一状态机）&#10;日志上限 2000 · 慢订阅者踢出 → ?from=seq 追平&#10;增量事件（token/thinking/partial）不入日志" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="webLayer">
+          <mxGeometry x="20" y="298" width="340" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="webGate" value="gate.go 259 + policy.go 208 — 浏览器审批门&#10;strict(全审) / standard(默认·只审 bash+未知) / auto&#10;· auto 可限 turn 数，耗尽自动回落 standard&#10;· 超时失败关闭（拒绝而非放行）· freeze/thaw&#10;· 白名单只精确匹配（前缀不是安全边界）&#10;· 危险命令标红且禁止 remember&#10;· 子 agent 调用带 Origin，禁止转常驻授权" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="webLayer">
+          <mxGeometry x="20" y="378" width="340" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- Frontend -->
+        <mxCell id="frontendBox" value="前端 web/ui — Vue 3 + Vite + TS（已落地）&#10;dist 经 go:embed 编进二进制（ui.go）&#10;-web-dev 反代 vite 热更新&#10;GateCard / DiffView / ContextMeter / PolicyPicker 等" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;verticalAlign=top;spacingTop=4;" vertex="1" parent="1">
+          <mxGeometry x="780" y="534" width="380" height="68" as="geometry" />
+        </mxCell>
+
+        <!-- Session pkg -->
+        <mxCell id="sessionBox" value="session 包（667 行）&#10;追加式 JSONL · {id, parentId} 树 · Fork 分支&#10;meta / message / stats 三类记录 · repairChain 容错&#10;List/Info 不加载全文即可列出会话 · UsageDelta 按轮增量&#10;~/.pi-go/sessions/*.jsonl（PIGO_SESSION_DIR 可覆盖）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;verticalAlign=top;spacingTop=6;fontStyle=1" vertex="1" parent="1">
+          <mxGeometry x="780" y="614" width="380" height="96" as="geometry" />
+        </mxCell>
+
+        <!-- wire pkg -->
+        <mxCell id="wireBox" value="wire 包（202 行）— agent.Event 的对外线路契约&#10;FromAgent 唯一翻译点 + Header（session/cwd/model/skills）&#10;消费方：-mode json（jsonmode.go）· web SSE 帧&#10;· subagent 父子进程事件流（同一契约）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;verticalAlign=top;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="780" y="722" width="380" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- skills pkg -->
+        <mxCell id="skillsBox" value="skills 包（633 行）— prompt 注入，不是工具&#10;SKILL.md + YAML frontmatter（name/description）&#10;渐进披露：prompt 只放清单，模型用 read 按需加载正文&#10;~/.pi-go/skills 默认开 · &lt;cwd&gt;/.pi-go/skills 默认关（防 clone 注入）&#10;/skill:name 手动展开 · skill 目录挂为只读工具的 Roots" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;verticalAlign=top;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="780" y="814" width="380" height="96" as="geometry" />
+        </mxCell>
+
+        <!-- worktree pkg -->
+        <mxCell id="worktreeBox" value="worktree 包（801 行）— edit 模式 subagent 的隔离工作区&#10;git worktree add --detach（HEAD）· 仓外 ~/.pi-go/worktrees&#10;（防父 agent 搜索扫到副本）· carryDirty 带未提交改动&#10;Verify 防篡改 → 父进程 Commit 至 refs/pi-go/sub/&lt;id&gt;&#10;.worktreeinclude 拷 gitignored 文件 · -worktrees/-prune 管理" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;verticalAlign=top;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="780" y="922" width="380" height="96" as="geometry" />
+        </mxCell>
+
+        <!-- diff pkg -->
+        <mxCell id="diffBox" value="diff 包（421 行）&#10;自研 Myers O(ND) 行级 diff&#10;（保持零三方依赖）&#10;只服务 Details 通道：&#10;模型看截断文本，人看完整 diff" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;verticalAlign=top;spacingTop=4;" vertex="1" parent="1">
+          <mxGeometry x="780" y="1030" width="185" height="88" as="geometry" />
+        </mxCell>
+
+        <!-- analyze pkg -->
+        <mxCell id="analyzeBox" value="analyze 包（505 行）&#10;离线会话 JSONL 分析：&#10;token / batch / 工具耗时 /&#10;重试 / 审批等待&#10;（-analyze-session）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;verticalAlign=top;spacingTop=4;" vertex="1" parent="1">
+          <mxGeometry x="975" y="1030" width="185" height="88" as="geometry" />
+        </mxCell>
+
+        <!-- review-board note -->
+        <mxCell id="reviewNote" value="review-board/ — 纯 Markdown 的架构 RFC 评审板（39+ issue），与代码零耦合；部分已落地为代码（#0019→analyze 包 · #0035→subagent worktree 隔离）· cmd/ 内含 measure-schema、test-overhead 两个开发小工具" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;fontSize=10;fontColor=#333333;verticalAlign=top;spacingTop=4;" vertex="1" parent="1">
+          <mxGeometry x="780" y="1130" width="380" height="52" as="geometry" />
+        </mxCell>
+
+        <!-- Edges -->
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;html=1;exitX=0.5;exitY=1;entryX=0.2;entryY=0;" edge="1" parent="1" source="faceP" target="agentLayer">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;html=1;exitX=0.5;exitY=1;entryX=0.4;entryY=0;" edge="1" parent="1" source="faceRepl" target="agentLayer">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="Event channel（无缓冲，lockstep）" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;exitX=0.5;exitY=0;entryX=0.5;entryY=1;" edge="1" parent="1" source="loopStream" target="faces">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="loopStart" target="loopStream">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;html=1;" edge="1" parent="1" source="loopStream" target="loopCheck">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" value="无" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;" edge="1" parent="1" source="loopCheck" target="loopReply">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" value="有" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=11;exitX=0.5;exitY=1;entryX=0.6;entryY=0;" edge="1" parent="1" source="loopCheck" target="loopExec">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8" value="results 回灌，下一 turn" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;exitX=0.5;exitY=0;entryX=0.5;entryY=1;" edge="1" parent="1" source="loopExec" target="loopStream">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" value="执行前 Review&#10;（nil 时跳过）" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;" edge="1" parent="1" source="loopExec" target="loopGate">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" value="Registry.Get(name).Execute(ctx, args)" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="agentLayer" target="toolsLayer">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" value="Stream()" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;exitX=0.3;exitY=1;entryX=0.3;entryY=0;" edge="1" parent="1" source="agentLayer" target="llmLayer">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" value="HTTPS POST /chat/completions (SSE)" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="llmLayer" target="extLayer">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e13" value="Session.Start → agent.Run&#10;事件 → Hub.Publish" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;exitX=1;exitY=0.35;entryX=0;entryY=0.35;" edge="1" parent="1" source="agentLayer" target="webLayer">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e14" value="浏览器 ←SSE— Hub&#10;审批 → /control → WebGate.Decide" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;exitX=0.5;exitY=0;entryX=1;entryY=0.5;" edge="1" parent="1" source="webServer" target="faceWeb">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e15" value="Gate 接口实现&#10;（仅 web 形态注入）" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;exitX=0;exitY=0.5;entryX=1;entryY=0.8;" edge="1" parent="1" source="webGate" target="loopGate">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e16" value="每 run 结束追加新消息+stats&#10;恢复时回放分支" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;exitX=1;exitY=0.7;entryX=0.3;entryY=0;" edge="1" parent="1" source="agentLayer" target="sessionBox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e17" value="List/Open 会话文件" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;exitX=0.5;exitY=1;entryX=0.7;entryY=0;" edge="1" parent="1" source="webLayer" target="sessionBox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e18" value="edit/write 生成 diff&#10;（仅 Details，不进上下文）" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="toolEdit" target="diffBox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e19" value="edit 模式：隔离 worktree&#10;父进程 Verify + Commit" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;exitX=1;exitY=0.75;entryX=0;entryY=0.5;" edge="1" parent="1" source="toolSubagent" target="worktreeBox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e20" value="spawn pi-go -mode json 子进程&#10;stdout=JSONL 事件流（wire 契约）&#10;env 标深度/只读 · 审批经&#10;PI_GO_GATE_FD 转发父进程" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;exitX=1;exitY=0.25;entryX=0;entryY=0.5;" edge="1" parent="1" source="toolSubagent" target="wireBox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e21" value="PromptSection 注入 system prompt&#10;（固定准则 + &lt;env&gt; + AGENTS.md + skills 清单）" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;exitX=0;exitY=0.3;entryX=1;entryY=0.9;" edge="1" parent="1" source="skillsBox" target="agentLayer">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e22" value="skill 目录 = 只读 Roots" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;exitX=0;exitY=0.7;entryX=1;entryY=0.5;" edge="1" parent="1" source="skillsBox" target="toolsLayer">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e23" value="离线读 JSONL" style="edgeStyle=orthogonalEdgeStyle;html=1;fontSize=10;fontColor=#666666;exitX=0.5;exitY=0;entryX=0.85;entryY=1;" edge="1" parent="1" source="analyzeBox" target="sessionBox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
