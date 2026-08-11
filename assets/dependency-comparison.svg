@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 420" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <style>
+    .title { font-size: 22px; font-weight: 700; fill: #1f2328; }
+    .subtitle { font-size: 13px; fill: #656d76; }
+    .bar-label { font-size: 14px; font-weight: 600; fill: #1f2328; }
+    .bar-num { font-size: 22px; font-weight: 700; fill: #ffffff; }
+    .bar-num-dark { font-size: 22px; font-weight: 700; fill: #1f2328; }
+    .footnote { font-size: 11px; fill: #8b949e; }
+    .axis { stroke: #d0d7de; stroke-width: 1; }
+  </style>
+
+  <!-- Title -->
+  <text x="40" y="40" class="title">Third-party dependencies of coding-agent CLIs</text>
+  <text x="40" y="62" class="subtitle">Direct deps from each project's manifest. Lower is better.</text>
+
+  <!-- Axis baseline -->
+  <line x1="220" y1="340" x2="760" y2="340" class="axis"/>
+
+  <!-- pi-go: 2 deps -->
+  <text x="40" y="120" class="bar-label">pi-go (Go)</text>
+  <rect x="220" y="95" width="6" height="40" fill="#00ADD8" rx="2"/>
+  <text x="232" y="121" class="bar-num-dark">2</text>
+
+  <!-- opencode: 30 direct deps -->
+  <text x="40" y="200" class="bar-label">opencode (Go)</text>
+  <rect x="220" y="175" width="90" height="40" fill="#8b949e" rx="2"/>
+  <text x="232" y="201" class="bar-num">30</text>
+
+  <!-- aider: 86 deps -->
+  <text x="40" y="280" class="bar-label">aider (Python)</text>
+  <rect x="220" y="255" width="258" height="40" fill="#8b949e" rx="2"/>
+  <text x="232" y="281" class="bar-num">86</text>
+
+  <!-- Scale ticks -->
+  <text x="220" y="360" class="footnote">0</text>
+  <text x="350" y="360" class="footnote">25</text>
+  <text x="480" y="360" class="footnote">50</text>
+  <text x="610" y="360" class="footnote">75</text>
+  <text x="740" y="360" class="footnote">100</text>
+
+  <!-- Footnote -->
+  <text x="40" y="395" class="footnote">Sources: go.mod / requirements.txt on each project's main branch (Aug 2026). pi-go's 2 deps serve only</text>
+  <text x="40" y="410" class="footnote">the browser-terminal path (creack/pty, nhooyr.io/websocket); the rest of the agent is pure Go stdlib.</text>
+</svg>

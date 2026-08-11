@@ -13,6 +13,10 @@
 
 一个 loop、九个工具、一种协议。**除浏览器终端外零第三方依赖**：`creack/pty` 和 `nhooyr.io/websocket` 只服务浏览器终端那条路径（`web/terminal.go` 加 `server.go` 里的升级处），其余全部是 stdlib。
 
+<p align="center">
+  <img src="assets/dependency-comparison.svg" alt="pi-go 只有 2 个第三方依赖，同类工具 30-86 个" width="560" />
+</p>
+
 ## 联系方式
 
 - 邮箱：<a href="mailto:wycc2077@qq.com">wycc2077@qq.com</a>
@@ -1233,6 +1237,10 @@ glm-5.2 原来在目录里写的是 200,000，**错了五倍**。厂商自己的
 > A minimal coding agent written in Go, a harness reimagining of [pi](https://github.com/earendil-works/pi).
 
 > One loop, nine tools, one protocol. **Zero third-party dependencies except for the browser terminal**: `creack/pty` and `nhooyr.io/websocket` only serve the browser-terminal path (`web/terminal.go` and the upgrade point in `server.go`); everything else is stdlib.
+
+<p align="center">
+  <img src="assets/dependency-comparison.svg" alt="pi-go has 2 third-party dependencies vs 30-86 for peer tools" width="560" />
+</p>
 
 ## Contact
 
