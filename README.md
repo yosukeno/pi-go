@@ -1719,43 +1719,276 @@ When creating a session you can pick which subdirectory under the server root th
 
 ## Models
 
-> 📝 **TODO**: translate from [## 模型](#模型).
+```bash
+$ pi-go -models
+   glm-5.2                    zhipu  ctx 1M     (glm, zhipu)
+   k3                         kimi   ctx 1M     (kimi-k3, kimi)
+   k3-256k                    kimi   ctx 262K
+   kimi-for-coding            kimi   ctx 262K   (k2.7)
+   kimi-for-coding-highspeed  kimi   ctx 262K   (k2.7-fast)
+```
+
+A provider with no key set is additionally flagged with which env var is missing. In interactive mode, `/models` shows a `*` in front of the current model.
+
+The parentheses hold aliases, all of which can be passed directly to `-model`:
+
+```bash
+pi-go -model glm-5.2 -p "..."
+pi-go -model glm -p "..."       # alias
+```
+
+Both endpoints speak the OpenAI-compatible protocol, built into `config/catalog.go`:
+
+| provider | baseURL |
+|---|---|
+| kimi | `https://api.kimi.com/coding/v1` |
+| zhipu | `https://open.bigmodel.cn/api/coding/paas/v4` |
+
+To go through a proxy or mirror, override with `KIMI_BASE_URL` / `ZHIPU_BASE_URL`; no recompile.
 
 ### Adding your own provider and model: `~/.pi-go/providers.json`
 
-> 📝 **TODO**: translate from [### 加自己的 provider 和模型:`~/.pi-go/providers.json`](#加自己的-provider-和模型pi-goprovidersjson).
+The two built-in ones are verified, but "only two are supported" is not a problem that built-in correctness makes up for — local model servers, corporate gateways, mirrors, those are yours alone. This file fills that gap; when absent everything runs on built-in behavior.
+
+```json
+{
+  "default": "qwen-big",
+  "providers": {
+    "local": { "base_url": "http://127.0.0.1:11434/v1", "key_env": "LOCAL_API_KEY" }
+  },
+  "models": [
+    { "id": "qwen-big", "provider": "local", "aliases": ["qwen"],
+      "context_window": 262144, "max_tokens": 8192,
+      "subagent_model": "qwen-small",
+      "price": { "input": 0.5, "output": 1.5, "cache_read": 0.05 } },
+    { "id": "qwen-small", "provider": "local", "context_window": 32768, "max_tokens": 4096 }
+  ]
+}
+```
+
+Merge rule: **overlay, not whole-replace**. A provider key or model id that collides with a built-in overrides that one entry; otherwise it is appended. `default` is optional; without it, the first entry of the built-in list is used. `PIGO_CONFIG` can change the file location.
 
 #### `price`: the sole input to `-cost-budget`
 
-> 📝 **TODO**: translate from [#### `price`：`-cost-budget` 唯一的依据](#price-cost-budget-唯一的依据).
+Optional; only `-cost-budget` reads it. **pi-go ships no built-in prices for any model**, for the same reason it ships no `subagent_model` mapping: how much a model costs is a claim about **your billing arrangement**, and pi-go has no basis to make it for you. For the two built-ins it is even more pointed — both are subscription plans, so the per-token cost is not "unknown" but **a quantity that does not exist**.
+
+So `-cost-budget` **refuses to start** when no price is declared, rather than silently doing nothing:
+
+```
+$ pi-go -cost-budget 5 -p "..."
+pi-go: -cost-budget needs a price for glm-5.2, and none is declared.
+pi-go ships no built-in prices: both built-in providers are subscription plans, ...
+Either use -token-budget or -time-budget, which need no price, or declare the rate in ...
+```
+
+Refuse rather than warn, because a spend cap **has no degraded mode**: "keep running but without a cap" is the exact opposite of what was asked, and that happens to be the kind of run no one is watching. (Contrast `subagent_model` pointing at a missing model — that one only warns, because it has a degraded mode: inherit the parent model and the session goes on.)
+
+Three fields, **unit: per million tokens**:
+
+| Field | Meaning |
+|---|---|
+| `input` | rate for prompt tokens that miss cache |
+| `output` | rate for completion tokens |
+| `cache_read` | rate for prompt tokens that hit cache; may be omitted (omitted = 0, meaning cache reads are free) |
+
+A few notes:
+
+- **The unit is whatever unit you yourself are billed in.** pi-go prints no currency symbol and does no conversion; `-cost-budget` compares in the same unit. The two built-ins bill in CNY, so hardcoding USD would be yet another unfounded assertion.
+- **`cache_read` is not an optional refinement.** Kimi's miss bills at roughly ten times its hit, Zhipu's roughly twice, so two sessions with good vs. bad prefix reuse differ in cost far more than they differ in tokens — and that is exactly the gap a cap is meant to catch. The algorithm subtracts first: `(input − cache_read volume) × input rate + cache_read volume × cache_read rate + output × output rate`; the cached portion is not charged twice.
+- **`cache_read` may not exceed `input`,** and startup is refused: cache reads by definition cost less than misses; if the two are flipped, someone transcribed the price page and swapped the fields. Negatives and absurd values are refused the same way.
+- **Writing an all-zero `price` is meaningful**, it states "this endpoint does not bill per token" (a local model server); in that case `-cost-budget` accepts it and never triggers. This is different from **not writing** `price`, which is refused.
+- Redeclaring a built-in model is a **whole-entry replacement**, so omitting `price` drops it — pi-go names it on stderr (same as dropping `aliases`, `context_window`).
+
+**But "override that one entry" is a whole-entry replacement, not a field-by-field merge** — this deserves its own paragraph because it has bitten once. Fields you did not write in your file **do not fall back to built-in values, they are simply absent**:
+
+```json
+{ "id": "glm-5.2", "provider": "zhipu", "context_window": 1048576 }
+```
+
+Such an entry makes glm-5.2 **lose its built-in `aliases`** (`-model glm` no longer finds it) and `max_tokens`. Either copy the built-in entry's fields in full, or don't write this id at all.
+
+**Both kinds of override now announce themselves on stderr, and when a whole-entry replacement drops fields the built-in had, it names which**:
+
+```
+config: provider "zhipu" from the config file replaces the built-in one
+config: model "glm-5.2" from the config file replaces the built-in one, dropping
+        aliases, max_tokens (the whole entry is replaced, not merged field by field)
+```
+
+The model half used to be **silent**, and that silence had a real cost: after glm-5.2's window was corrected in the catalog from 200,000 to 1,048,576, a config file that redeclared this id kept the old value and said nothing — so `-context-edit auto` kept cleaning at one-tenth of the real window, the browser usage bar went red at one-sixth, and the fix looked as if it had taken effect. **Provider warns, model does not** — that asymmetry is exactly why it went undetected.
+
+Only fields whose behavior would change are named (`context_window`, `max_tokens`, `aliases`, `subagent_model`, `subagent`, `price`). **`provider` changing does not count as a loss** — pointing an id at a different provider is precisely one of the main reasons to redeclare a built-in model.
+
+**`subagent_model`: the model read-only subagents run.** Looking up where something is implemented is lighter than implementing it; and this is the scenario where latency is most visible — a parent turn is blocked waiting for the answer. Without it, the parent's model is inherited, which is the current behavior. **Only `explore` mode consumes this field**: an `edit` sub does the work the parent would have done, so silently downgrading it changes the task result rather than saving the cost of one lookup.
+
+pi-go **ships no `subagent_model` mapping**. Which model is the cheap cousin of which other model is a pricing assertion; pi-go has no basis to make it for you.
 
 #### Why it only reads home, not the project dir
 
-> 📝 **TODO**: translate from [#### 为什么只读 home,不读项目目录](#为什么只读-home不读项目目录).
+This is a security decision with a concrete precedent: **CVE-2026-21852** — Claude Code's project-loading flow allowed a repo to ship a settings file that pointed the base URL at an attacker's endpoint, and the API key had already been sent **before** the user was asked "do you trust this project." A file that decides "which host your credentials go to" cannot be something a `git clone` can carry along. The home directory is by construction as trusted as the binary; the working directory is not.
+
+So **there is no project-level provider config, and no merging against it either**. When this file is found in the working directory, pi-go says so on stderr and ignores it — there are only two explanations, you wrote it in the wrong place, or someone is trying.
+
+Three more validations, all of which refuse to start:
+
+- **`key_env` must be an environment variable name,** not the key itself. This is the most likely mistake, and the error message **does not echo the value** — it is very likely your secret.
+- **Remote must be https.** Credentials travel in the header of every request; sending them in cleartext to a remote hands them to anyone on the path. Loopback (`127.0.0.1` / `localhost` / `::1`) is excepted, because local model servers are exactly a main reason to write this file, and there is no network to listen.
+- **Unknown fields error out.** A misspelling like `"provders"`, if silently ignored, would let you believe some setting had taken effect when it had not.
+
+`subagent_model` is the one exception: pointing at a nonexistent model only degrades to "inherit" with a warning, it does not block — it is an optional field, and tanking an entire session over it would be the wrong trade.
+
+The default model is glm-5.2 rather than k3: the kimi endpoint currently hangs on k3 streaming requests (non-streaming is fine, measured 2026-08), and pi-go always uses streaming. k3 stays in the catalog, waiting on an upstream fix.
 
 ## Interactive Mode Commands
 
-> 📝 **TODO**: translate from [## 交互模式命令](#交互模式命令).
+| Command | Description |
+|---|---|
+| `/model` | show the current model and list the choices |
+| `/model <name>` | hot-swap the model, **conversation history preserved as-is** |
+| `/models` | list models |
+| `/usage` | token totals for this session |
+| `/compact` | replace the current conversation with a summary. Costs one model call; the full record stays in the session file. See "Compaction" |
+| `/skills` | list loaded skills |
+| `/skill:<name> [args]` | inject a skill's full text into the current turn |
+| `/help` | show the command list |
+| `/exit` / `/quit` | quit |
+
+The input line has line editing: cursor movement, ↑/↓ history, Tab completion (commands and model names after `/model` are completable, candidates show as you type, with descriptions). The implementation is a self-contained editor in `tui/lineedit.go`, raw mode via `stty(1)`, still zero third-party deps; degrades to line scanning when there is no tty or no stty.
+
+Switching is this simple because the two providers share a protocol, thinking content is not returned, and nothing in the history is bound to a specific model:
+
+```
+> remember this project uses pnpm not npm
+> /model glm-5.2
+switched to glm-5.2 (zhipu), 2 messages carried over
+> help me add a lint script       # it still knows to use pnpm
+```
 
 ## Tools
 
-> 📝 **TODO**: translate from [## 工具](#工具).
+Nine, all under `tools/`. The table below is the seven resident ones; the eighth `subagent` and the ninth `todo` each get their own section.
+
+| Tool | Args | Description |
+|---|---|---|
+| `read` | `path`, `offset?`, `limit?` | read a file; truncated past 2000 lines or 50KB with a hint to continue via `offset` |
+| `ls` | `path?`, `limit?` | list one directory level; directories carry `/`, dotfiles included, truncated at 500 entries or 50KB |
+| `find` | `pattern`, `path?`, `limit?` | find files by glob. With `/` it matches the relative path, otherwise the filename. Default 200 entries |
+| `grep` | `pattern`, `path?`, `include?`, `limit?` | search content with a Go regex; output `path:line:text`. Leading `(?i)` is case-insensitive. Skips binary and files over 8MB; default 100 matches |
+| `write` | `path`, `content` | write a file; auto-creates parent directories |
+| `edit` | `path`, `edits[{oldText,newText}]` | exact string replacement; `oldText` must match uniquely |
+| `bash` | `command`, `timeout?` | run a command; default 120s timeout; output keeps the last 2000 lines / 50KB. **Output streams while running**, see below |
+
+**Args are validated against the schema before execution**, and before the approval gate — a call with a missing field cannot run no matter what you approve. The error names the missing field, lists every field the tool accepts, and on a misspelling gives a hint (`file_path` → "did you mean path"). Unknown fields are always tolerated: the model often adds harmless extra keys, and wasting a turn over that is not worth it.
+
+**`bash` output streams while running**, so when `go test` runs for a minute you can tell whether it's running or stuck:
+
+```
+· bash {"command":"for i in 1 2 3; do echo \"tick $i\"; sleep 2; done"}
+  │ tick 1
+  │ tick 2
+  │ tick 3
+  [exit 0, 6.0s, 3 lines]
+```
+
+The terminal only prints like this when **a single tool is in flight** — two commands interleaved into the same terminal is unreadable, and there is no pane here to split them into. At the end, what's printed is the status line, not a repeat of the already-scrolled output. The web UI is not bound by this, and refreshing the page mid-flight also shows what was produced so far.
+
+**A tool failure does not break the loop.** The error text is returned to the model as the result, letting it self-correct. This is the most important design inherited from pi:
+
+```
+> change the second 'x = 1' in dup.txt to 'x = 99'
+· edit {"edits":[{"oldText":"x = 1","newText":"x = 99"}],"path":"dup.txt"}
+  ! edits[0].oldText matches 2 places in dup.txt. Add surrounding context to make it unique
+· read {"path":"dup.txt"}
+· edit {"edits":[{"oldText":"y = 2\nx = 1","newText":"y = 2\nx = 99"}],"path":"dup.txt"}
+  Successfully replaced 1 block(s) in dup.txt
+```
 
 ## The Ninth Tool: todo
 
-> 📝 **TODO**: translate from [## 第九个工具:todo](#第九个工具todo).
+The model itself decides whether to make a list. With three steps or more, or when you give it several things at once, it writes one first; a single step, a trifle, a pure question gets none — a one-item list helps nobody. Afterwards it rewrites on every item started and every item finished, **whole-table replace**, no incremental patch, so there is no "half-modified" intermediate state.
+
+```
+· todo {"todos":[{"task":"change timeout from 30s to 60s","status":"in_progress"}, …]}
+  1/3 done
+  ✓ find where the timeout constant is defined
+  ▸ change timeout from 30s to 60s
+  ○ run go test ./config
+```
+
+Five states: `pending` / `in_progress` / `completed` / `cancelled` / `blocked`. The last two are not filler — "tests didn't pass, you may not mark it complete" needs a slot (`blocked`), and an item dropped mid-plan would lose the record that "it was once considered" if just deleted (`cancelled`).
+
+**"At most one in_progress" is enforced by validation, not requested in the prompt.** It goes through the `ValidateArgs` path, so it is caught before the approval gate, and the error names which items:
+
+```
+at most one task may be in_progress, but items 1, 3 are all marked in_progress.
+Mark the one you are actually working on now and leave the rest pending
+```
+
+This is the same machinery as "tool failure does not break the loop" — the model reads this and corrects itself once. Of three reference implementations only Gemini CLI does this; the other two only plead in the prompt.
 
 ### This tool holds no state
 
-> 📝 **TODO**: translate from [### 这个工具不持有任何状态](#这个工具不持有任何状态).
+**The current list is the latest `todo` tool result in the history.** No field, no lock, no new on-disk record:
+
+- The tool runs on the batch goroutine, and `Agent.mu` deliberately only guards steering. Adding a field would open a new concurrency surface for something the transcript already stores.
+- The list enters the session file as an ordinary message, so `-resume` needs no new record type to restore it.
+- Each update is an **append**, not a rewrite; prefix caching stays intact. This is a hard constraint, not a preference: Kimi's and Zhipu's context caches are implicit and automatic, **there is no API to edit an already-cached prefix**, so one rewrite would be rebilled at full price.
+
+The cost is that superseded old lists pile up in the history. That is the eviction layer's job, not this tool's — only the latest one is live, earlier ones are ordinary stale tool output.
 
 ### The subagent does not get this tool
 
-> 📝 **TODO**: translate from [### subagent 拿不到这个工具](#subagent-拿不到这个工具).
+Same reasoning as the subagent tool, same place (`toolOptions`): **not registered by depth**, rather than registered-then-refused. A tool that does not exist costs no schema tokens and cannot be wasted a turn trying.
+
+All three vendors do this: OpenCode has a dedicated module `deriveSubagentSessionPermission` that default-denies `todowrite` together with "delegate further down" in one rule; Claude Code's explore / general-purpose sub prompts never mention TodoWrite at all; Gemini CLI's `codebase-investigator` gets a whitelist of only four read-only tools.
+
+The reason is that **the sub's list has no reader.** A list earns its tokens back by two things: showing a human progress, and carrying the agent's "where am I" across a context-compaction boundary. A sub lives one run, capped at a 10-minute timeout, and never reaches a compaction boundary; and its progress is already shown in the parent's subagent card, at finer grain (turn boundaries, each tool call and its success/failure). What's left is only a second writer for "what is being done right now" — and that question must have exactly one answer.
+
+The reverse is the real junction: **the list is the driver of delegation, and a delegation coming back does not equal that item being done.** What an `edit` sub hands back is a commit pinned at `refs/pi-go/sub/<id>` and not yet cherry-picked, so between "the sub reports success" and "this item can be marked completed" there is at least one merge-back and one verification still missing. The tool description says so.
 
 ## skills
 
-> 📝 **TODO**: translate from [## skills](#skills).
+A skill is a pack of domain knowledge loaded on demand: a directory, a `SKILL.md`, plus whatever scripts and reference docs it needs. At startup only the name and description enter the system prompt; when the model decides the task matches, it reads the full text itself via `read` — so twenty skills cost only a few hundred tokens at idle.
+
+The format matches the [Agent Skills standard](https://agentskills.io/specification) and pi; the same directory works on both.
+
+```
+~/.pi-go/skills/go-test-triage/
+├── SKILL.md              # frontmatter has name + description, body is the instructions
+├── scripts/triage.sh
+└── references/conventions.md
+```
+
+```markdown
+---
+name: go-test-triage
+description: >
+  Run Go tests and report only failures, one line each. Use when asked to triage or check test status.
+---
+
+# Go test triage
+...
+```
+
+`description` decides when the model will reach for it; write it specifically. A skill missing `description` is not loaded; other format problems only warn.
+
+**Load locations**:
+
+| Location | Default |
+|---|---|
+| `~/.pi-go/skills/` | loaded |
+| `./.pi-go/skills/` | **not loaded**, requires `-project-skills` |
+| `-skill <path>` | explicit; `-no-skills` does not affect it |
+
+Project-level being off by default is deliberate: a skill is a file that can rewrite the system prompt, and cloning someone else's repo in and running it would execute their instructions on the first turn. Opt in explicitly. On a name conflict the one under `~` wins.
+
+```bash
+pi-go -skills                       # see what was discovered and where it looked
+pi-go -project-skills -p "triage the tests"
+> /skill:go-test-triage web only     # force-load, don't wait for the model to decide
+```
+
+The skill directory is **readable but not writable**: `read` and `ls` can enter, `write` / `edit` cannot — the model cannot rewrite its own instructions. Note however that `bash` is, as always, not path-restricted; scripts inside a skill are ordinary scripts and run as if you typed them yourself. **A skill's content is instructions that will be executed; read someone else's skill before using it.**
 
 ## Cross-Session Memory
 
