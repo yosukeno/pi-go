@@ -1556,39 +1556,166 @@ Model inherited, turn budget not, looks inconsistent — but ask "what does each
 
 ## Isolated Parallel Sessions: worktree
 
-> 📝 **TODO**: translate from [## 隔离的并行会话:worktree](#隔离的并行会话worktree).
+To run two agents on the same project without them overwriting each other, give each one a git worktree:
+
+```bash
+git worktree add --detach ../proj-a HEAD
+pi-go -C ../proj-a -p "switch auth to OAuth"     # launch another in a second terminal
+pi-go -worktrees                                  # see which ones exist now
+pi-go -worktrees-prune                            # clean up unused ones with no unsaved changes
+```
+
+`-worktrees` answers two questions: "what would prune do with these" and "why won't anything run in here":
+
+```
+$ pi-go -worktrees
+ busy                     91457def98b3 holds work
+   missing: build/ node_modules/
+ clean                    91457def98b3
+   missing: build/ node_modules/
+"missing" means gitignored in this project and absent from that checkout;
+list what a build needs in .worktreeinclude
+~/.pi-go/worktrees/repo-e8307175
+```
+
+`holds work` is exactly what `-worktrees-prune` will keep, **in the same call**, so the listing and the cleanup cannot give two answers — being told afterwards "kept three because they had work" is worse than seeing up front which three. `missing` is the ignored paths that checkout lacks; this information used to reach only the agent working inside it, not the person debugging from outside. Whatever `.worktreeinclude` carries over does not appear on this line.
+
+Worktrees pi-go creates itself live **outside the repo**, in `~/.pi-go/worktrees/<project>-<hash>/` (overridable with `PIGO_WORKTREE_DIR`), not inside it. The reason is concrete: a worktree is a full copy of the project, and if it sat inside the repo `find` and `grep` would walk into it — and those two tools have result caps (200 / 100 entries) and dot-directories sort ahead of source — so the parent agent would get a screenful of its own copies instead of its source. Outside the repo, it does not need filesystem access to see results: the worktree shares `.git` with the main repo, so `git show <ref>:<path>` is enough.
+
+Creation does three things: a **detached** checkout based on HEAD (no branch created, no pollution of the branch namespace); carries the parent's **uncommitted changes to tracked files** into the new checkout (untracked files cannot come along, and it tells you exactly which — reading them would require writing to the parent's index); copies git-ignored files like `.env` per `.worktreeinclude` (same name and meaning as Claude Code's and Codex's). A running worktree is held by `git worktree lock`, with the pid recorded in the lock reason, so if the process crashes `-worktrees-prune` can recognize that and release it.
 
 ### `.worktreeinclude` and "what a clean checkout is missing"
 
-> 📝 **TODO**: translate from [### `.worktreeinclude` 与「一个干净检出缺什么`](#worktreeinclude-与一个干净检出缺什么).
+A fresh checkout has no `node_modules`, no virtualenv, no build artifacts — all gitignored, and a checkout does not carry ignored things. So the first command a subagent runs often fails, and the failure points somewhere else: `cannot find module` reads like a broken dependency, not like a directory that was never populated.
+
+Two responses:
+
+**`.worktreeinclude` supports directories.** Write a line `node_modules` and every file under it at any depth gets copied. `/node_modules/` and `node_modules` are equivalent; globs like `packages/*/node_modules` are recognized (monorepos). The syntax is a subset of gitignore: comments, one entry per line, no `**`, no negation. The safety property comes from the caller rather than from the pattern — **git decides what is ignored**, so no pattern can splat an old copy of source over the checkout.
+
+It is a copy, not a symlink or a CoW clone. Symlink is most people's first instinct, and it is wrong in two places: two parallel subagents would share one mutable dependency tree; and a link pointing at the worktree is a hole in this layer of isolation. CoW clone is safe but **measured as not worth it**: 1000 small files, plain copy 0.19s, APFS clonefile 0.13s — the bottleneck of a dependency tree is file count not bytes, and 30% of a fifth of a second does not justify platform-specific code plus a fallback path.
+
+**What did not come along is told to the sub explicitly.** Tasks delegated to an `edit` sub get a fenced prefix listing: uncommitted changes that did not come along (if any didn't make it), which ignored directories are not here (in git's folded form, `node_modules/` rather than its ten thousand files), and what uncommitted new files the parent has. **States facts, gives no instructions** — whether a missing dependency should be installed, worked around, or stopped on depends on the task itself, and the sub is better placed than this text to judge, but it has to know first. In a clean repo this paragraph does not appear at all: a hint that fires every time is one no one reads by the time it should fire.
+
+**A worktree is not a security boundary.** It isolates working files, not git metadata: all worktrees share one writable `.git`, and the `.git` inside a worktree is itself a plain text file — rewrite it, run a plain `git commit`, and the commit lands on the main branch. pi-go's answer is **detection, not prevention**: identity is re-verified before every git operation inside a worktree, and a failed check refuses to commit or merge back. A real boundary needs a container or a dedicated user; see "Security boundary."
 
 ## Browser UI
 
-> 📝 **TODO**: translate from [## 浏览器界面](#浏览器界面).
+```bash
+$ pi-go -web
+pi-go web  model=glm-5.2  cwd=/Users/you/project
+  http://127.0.0.1:7777/?token=6f1c...
+```
+
+Open that URL and you're in: session list on the left, timeline in the middle (thinking / tool calls / answers), input box at the bottom. `edit` changes render as a diff, `bash` output as a terminal, `todo` as a checklist, and calls needing approval pop a card on the spot.
+
+**Only the latest task list counts.** A model rewrites the list several times during a session, and each occurrence is a card on the timeline. An `edit` diff is something that happened and is forever true; a list is **state at that moment**, superseded by the next write. So superseded ones collapse to one line and dim (clickable — "when did this item appear" is occasionally worth checking) — drawing them all at full strength, scrolling up to a "1/3 done" card, would read as current progress. The judgment recognizes only **ended-and-successful** writes: a refused call wrote nothing, an in-flight one has not written yet, and neither may downgrade a previous good list.
+
+**You can send more while it runs.** While running, the send button turns into a blue "follow-up" and the message gets queued into the running turn: delivered after this turn's tool calls finish and before the next time the model is asked. So when you notice it going the wrong way you don't have to cancel the whole turn — just say "use X instead." If the turn happens to end the instant you press send, the text goes back into the input box with a notice, it does not vanish.
+
+The top bar has a model switcher (switching preserves conversation history; disabled while running) and a **context usage bar**: yellow past 70%, red past 85%. That percentage is the size of the **most recent turn's prompt**, not the session cumulative — the cumulative grows much faster (every turn resends all history) and is only good for billing. Click it to expand a composition panel: what is eating context, and **which lever to pull** (see "Compaction" — the same data yields two opposite recommendations).
+
+The usage bar now walks back on its own: by default context cleaning starts discarding old tool output around four-fifths of the window (see "Context cleaning"), and the next turn's measured prompt is smaller as a result. **So the bar's yellow/red is computed against the trigger line, not a fixed percentage of the window** — cleaning holds usage just under the trigger line; with a fixed percentage the bar would be yellow the whole time, and a permanently lit warning color carries no information. Green = not yet at the trigger; yellow = cleaning is running (normal); red = cleaning cannot keep up, you should act. With `-context-edit off` nothing pulls the prompt back down, and the band reverts to fixed 70%/85%. The reason it drops is exposed on the `context_edit` field of the `turn_start` event; the terminal prints a line, the browser currently only reflects it as the bar dropping. **But cleaning is not compaction**: a session bloated by conversation text rather than tool output has nothing to clean. What helps then is `/compact` (see "Compaction"), not starting a new session — click the bar and the composition panel tells you which one it is.
+
+The page is embedded in the binary, no separate deploy. To rebuild after front-end changes:
+
+```bash
+cd web/ui && npm ci && npm run build   # output in web/ui/dist, embedded into the binary
+cd ../.. && go build -o pi-go .
+```
+
+For development use `pi-go -web -web-dev http://localhost:5173` (in another terminal `cd web/ui && npm run dev`): the browser only talks to the Go server, non-API routes are reverse-proxied to vite, so single origin, the token still works, and HMR is usable.
+
+Three things worth knowing:
+
+**The lifetime of a run belongs to the session, not the connection.** Initiate (`POST /messages`) and subscribe (`GET /stream`) are separate endpoints, so closing the browser, refreshing, or switching tabs does not interrupt a running task. On reconnect the first frame is `snapshot`, carrying finalized messages, in-flight accumulated text, unfinished tool calls, and pending approval cards; network jitter can use `?from=<seq>` to take only the delta.
+
+**bash requires your approval by default.** Three policy tiers: `strict` (asks even for write/edit), `standard` (default, asks only for bash), `auto` (allow all). Approval cards carry an absolute expiry timestamp, so the remaining time after a page refresh is still correct; timeout is treated as **deny**, and a deny is just an error message back to the model — the loop continues, the model can explain or pick another approach, no need to rerun the whole turn.
+
+**A token is always required.** Without `PIGO_WEB_TOKEN` set, one is generated randomly per startup and printed. It binds to `127.0.0.1` only by default and warns additionally when bound to an external address. The reason is in the security boundary below: the `bash` tool has no path restrictions.
+
+The page and its js/css do not need a token (a browser cannot add headers to `<script>` tags it discovers itself), **`/api/*` always does**. The front end takes the token from the URL and stores it in sessionStorage, so refreshing in the same tab is fine; a new tab has to be opened with the token-bearing URL again.
+
+```bash
+T=<token>; B=http://127.0.0.1:7777
+SID=$(curl -s -X POST -H "Authorization: Bearer $T" $B/api/sessions \
+      | sed 's/.*"session_id":"\([^"]*\)".*/\1/')
+
+curl -N -H "Authorization: Bearer $T" "$B/api/sessions/$SID/stream" &   # subscribe first
+curl -X POST -H "Authorization: Bearer $T" \
+     -d '{"prompt":"read main.go, then run go build"}' \
+     "$B/api/sessions/$SID/messages"                                   # then ask
+
+# Approve a bash call (gate_id comes from the gate_request event)
+curl -X POST -H "Authorization: Bearer $T" \
+     -d '{"action":"gate_decide","gate_id":"g1","allow":true}' \
+     "$B/api/sessions/$SID/control"
+
+# Don't want to be interrupted: auto-approve the next 3 turns
+curl -X POST -H "Authorization: Bearer $T" \
+     -d '{"action":"set_policy","mode":"auto","turns":3}' \
+     "$B/api/sessions/$SID/control"
+```
+
+Full endpoint and event list in `docs/web-ui-design.md` §6 / §11; design tradeoffs in the same doc.
 
 ### File panel in the browser
 
-> 📝 **TODO**: translate from [### 浏览器里的文件面板](#浏览器里的文件面板).
+A workspace file panel lives in the dock: directory tree, file preview, and `Cmd/Ctrl-P` quick open. With both panels open you can drag the divider to adjust the split.
+
+- **Paths go through the agent's own sandbox** (`tools.Resolve`), the same canonical-escape check. **The browser should not see further than the model can.**
+- `.git` is hidden from the directory listing — thousands of objects in a file panel is noise. This is **not a security boundary**, the escape check is.
+- The quick-open index additionally skips `node_modules` / `dist`, otherwise the project's own files would be drowned out. This is a **built-in noise list that deliberately does not parse `.gitignore`** (to stay zero-dependency), while the directory tree still lists everything, leaving a path for the occasional need to peek into `node_modules`.
+- Image preview serves only `image/*`, decided by sniffing and served with `nosniff`. The reason is concrete: the response runs on the same origin, and that origin holds the token — a file rendered as HTML or SVG could grab it.
+- **Saving from the file panel deliberately does not go through the approval gate.** The gate governs the model; this request can only come from someone holding the token over loopback, i.e., you. The path still goes through the same sandbox, and this write **enters the journal the same way an agent write does**, so it shows up in "Workspace changes" below.
+- "New folder" creates only one level. A missing parent is a 404, not a silent materialization of an entire path — Finder works the same way.
 
 ### Terminal in the browser
 
-> 📝 **TODO**: translate from [### 浏览器里的终端](#浏览器里的终端).
+The other half of the dock is a login shell on a real pty, running in this session's own working directory. It answers a natural question: **the agent is editing my files, let me poke around that directory myself.** It goes over websocket (`GET /api/sessions/{id}/terminal`), behind the same token gate as the other endpoints.
+
+This is the sole reason for the two third-party dependencies on the Go side: `creack/pty` opens the pty, `nhooyr.io/websocket` ships the frames. Hand-writing a pty's ioctls and a passable websocket implementation is not the price "zero dependencies" should pay.
+
+A few properties worth knowing:
+
+- **The shell's lifetime belongs to the session, not the connection.** Closing a tab or switching sessions only detaches; the next attach replays the backlog ring (256KB), so a half-finished `make` is still scrolling when you come back. It only disappears with the session (eviction/deletion/server shutdown) or when you type `exit` yourself — after which the next attach opens a new one.
+- **Only one view at a time.** A second client attaching kicks the first: the most recent window is the one you are actually looking at.
+- The shell is your own `$SHELL`, environment inherited as-is. Anything less would make it look broken next to a terminal you already had open.
+- On close, **the process group is killed**: the dev server the shell started is a member of its process group, and reaping only the leader would orphan them. This is the same rule as cancelling a tool call mid-turn.
+
+**This piece closes the security boundary point: an unauthenticated instance equals offering a shell as a service.** That is why a token is always required and the default bind is `127.0.0.1` only. The `bash` tool already has no path restrictions, and here the gate is not even present — it was never meant for the model.
 
 ### Workspace changes
 
-> 📝 **TODO**: translate from [### 工作区改动](#工作区改动).
+The "Changes" tab has two scopes:
+
+- **This session** — projected from the timeline's event stream, i.e., what this session's `edit` / `write` did.
+- **Workspace** — the whole-workspace diff computed from **the pre-image at first touch** (the file journal). This is the half the client cannot answer: it does not know what the file looked like before the agent started.
+
+The journal records a pre-image the first time a file is `edit`ed/`write`en; subsequent calls dedupe. Rendering has two caps: 2MB per side, 5000 lines per patch — over the cap, the filename and stats are still listed, **only the patch is dropped**. What's limited is rendering, never navigation.
 
 ### Rewind and checkpoint
 
-> 📝 **TODO**: translate from [### 撤回（rewind）与 checkpoint](#撤回rewind-与-checkpoint).
+Any of your questions on the timeline can be rewound: that message, every turn answering it, and everything after, becomes unreachable from the session head. **Nothing is deleted** — the transcript is append-only; rewind is forking on a tree, and the old branch is still in the file.
+
+Beyond the conversation you can also **restore the files** to "the state when you sent that message": changed files go back, deleted files come back, files created afterwards are removed. This is backed by a **shadow git repo** that snapshots the entire working tree before each run starts.
+
+A few design decisions:
+
+- **The shadow repo lives under the session directory, never in the workspace** (`<session-dir>/checkpoints/<project>/`). So **your workspace does not need to be a git repo**, and if it is, **not a word of your own git history is touched**.
+- This is what the market has converged on (Codex's ghost commit, Gemini CLI's `~/.gemini/history`, Cline's per-task shadow repo); the reason is that **whole-tree snapshots catch things per-file hooks cannot**: what bash wrote, deletions, renames.
+- The checkpoint is named with **the transcript head record id at the moment the run started** (`refs/checkpoints/<recordID>`). And the forking point of a rewind happens to be exactly such a record id — **this is the join key between the two trees**: the conversation forks in the JSONL, the shadow branch forks here.
+- **The failure mode of a checkpoint is always "unavailable," never "blocking."** No git, directory not writable — the run goes ahead, there is just nothing to restore at that point, and rewind degrades to conversation-only — i.e., the behavior that existed before checkpoints.
+- **Restore previews and asks, it does not guess.** A snapshot cannot tell "what the agent changed" from "what you changed after the checkpoint," so the dialog first lists which files will move (git's name-status: `M` restore / `D` recover / `A` delete) and each one's line delta, and states clearly that **files created afterwards will be deleted and your manual edits will be overwritten**. Binary files report "binary" rather than a made-up line count.
+- **Restore runs first, fork runs after, under the same lock**, so rewind is all-or-nothing: a failed restore leaves the conversation completely untouched, and there is no gap for a run to slip into in between.
+- `reset --hard` ignores untracked files, but the files created by the abandoned run are exactly untracked — so a `clean -fd` follows. **Ignored paths are left alone**, which is the point of ignoring them rather than deleting them.
 
 ### Session sidebar: rename and pin
 
-> 📝 **TODO**: translate from [### 会话侧栏:重命名与置顶](#会话侧栏重命名与置顶).
+The ⋮ menu on each session in the sidebar lets you rename and pin; pinned ones sort to the top (`PATCH /api/sessions/{id}`, `title` and `pinned` are independently submittable). Without a custom name, the title comes from the first question.
 
 ### Picking a workspace when creating a session
 
-> 📝 **TODO**: translate from [### 新建会话时选工作区](#新建会话时选工作区).
+When creating a session you can pick which subdirectory under the server root this session works in (the `workspace` field of `POST /api/sessions`, `""` means root). The picker's model is Claude Code's "the folder you're looking at is the selection": rows enter directories, the bottom always states which one will be used, and root is one Enter away as the default. The filter box and keyboard confirmation come from VSCode's quick pick; the inline "new folder" comes from Finder.
 
 ## Models
 
