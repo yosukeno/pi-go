@@ -43,7 +43,9 @@ cd web/ui && npm run build && cd ../.. && go build -o ~/.local/bin/pi-go .
 
 ## 配置
 
-密钥只从环境变量读，**不读任何配置文件**。
+三件事：API key、provider/model 目录、会话目录。
+
+**1. API key（环境变量）**。密钥只从环境变量读，**不读任何配置文件**。
 
 ```bash
 export KIMI_API_KEY='sk-...'      # Kimi for Coding 套餐
@@ -65,6 +67,14 @@ echo '[ -f "$HOME/.pi-go/env.sh" ] && source "$HOME/.pi-go/env.sh"' >> ~/.zshrc
 ```
 
 只配一个也能用，另一个 provider 的模型会在 `-models` 里标成 `not set`。
+
+**2. provider 和模型目录：`~/.pi-go/providers.json`**。要加本地模型服务、公司网关、镜像，或声明模型价格给 `-cost-budget` 用，就在这个文件里写；不写则一切按内置两家跑。完整字段和合并规则见[「模型 → 加自己的 provider 和模型」](#加自己的-provider-和模型pi-goprovidersjson)。
+
+```bash
+$PIGO_CONFIG / ~/.pi-go/providers.json
+```
+
+**3. 会话目录**。默认在 `~/.pi-go/sessions/`，用 `PIGO_SESSION_DIR` 改；`-resume last` 找的就是这里最新的文件。详见[「会话」](#会话)。
 
 ## 快速开始
 
@@ -1268,7 +1278,9 @@ cd web/ui && npm run build && cd ../.. && go build -o ~/.local/bin/pi-go .
 
 ## Configuration
 
-Keys are read **only** from environment variables — **no config file is read**.
+Three things: API key, the provider/model catalog, and the session directory.
+
+**1. API key (environment variables).** Keys are read **only** from environment variables — **no config file is read**.
 
 ```bash
 export KIMI_API_KEY='sk-...'      # Kimi for Coding plan
@@ -1290,6 +1302,14 @@ echo '[ -f "$HOME/.pi-go/env.sh" ] && source "$HOME/.pi-go/env.sh"' >> ~/.zshrc
 ```
 
 Configuring only one provider works fine; models from the other provider will simply show up as `not set` under `-models`.
+
+**2. Provider and model catalog: `~/.pi-go/providers.json`.** To add a local model server, a corporate gateway, a mirror, or to declare model prices for `-cost-budget`, write them in this file; without it everything runs on the two built-in providers. Full field reference and merge rules in [Models → Adding your own provider and model](#adding-your-own-provider-and-model-pi-goprovidersjson).
+
+```bash
+$PIGO_CONFIG / ~/.pi-go/providers.json
+```
+
+**3. Session directory.** Defaults to `~/.pi-go/sessions/`, overridable with `PIGO_SESSION_DIR`; `-resume last` looks here for the newest file. See [Sessions](#sessions).
 
 ## Quick Start
 
