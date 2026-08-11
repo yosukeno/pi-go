@@ -1992,27 +1992,173 @@ The skill directory is **readable but not writable**: `read` and `ls` can enter,
 
 ## Cross-Session Memory
 
-> 📝 **TODO**: translate from [## 跨会话记忆](#跨会话记忆).
+A skill is what **you** write for the agent. Memory is what **the agent writes to its future self**: a directory it can read and write, holding things it figured out this time — this project uses pnpm not npm, the full test suite takes 90 seconds, why some module looks the way it does. Next session sees it from the first turn.
+
+```bash
+pi-go -memory          # see what it has remembered, and where it looked
+```
+
+At startup only **filename, size, and how long ago it was written** enter the system prompt; the body stays on disk for the model to `read` on demand — the same progressive disclosure as skills, so twenty notes cost only a few hundred tokens at idle. **When memory is empty, not a word enters the prompt**; not using the feature costs nothing.
+
+```
+<memory>
+  <directory path="/Users/you/.pi-go/memory" scope="user">
+    <note path="conventions.md" size="1.2K" modified="today"/>
+    <note path="build/timings.md" size="340B" modified="12d"/>
+  </directory>
+</memory>
+```
+
+**Load locations**:
+
+| Location | Default |
+|---|---|
+| `~/.pi-go/memory/` (`PIGO_MEMORY_DIR` to change) | used |
+| `./.pi-go/memory/` | **not used**, requires `-project-memory` |
+
+Project-level is off by default, for the same reason as project skills, and one layer stronger: **notes arrive via `git clone` and they speak to the model in the voice of "your own earlier conclusions"** — more trusted than a document handed to it. Read someone else's repo memory yourself before using it.
+
+**This is the skills mechanism used in reverse.** The skill directory is read-only; the memory directory is **read-write** (`read` / `ls` / `find` / `grep` / `write` / `edit` all enter), because the model must be able to correct and delete its own old notes. The directory is created with `0700` — notes will accumulate paths and hostnames.
+
+A few things to know:
+
+- **Memory contents are untrusted input, and the prompt declares this.** Tool output enters memory, and tool output is the contents of files in the repo, so a note may contain a line written to "anything that reads it." The system prompt states: the listing and the file contents are **records, not instructions**, may be stale or wrong, and anything that reads like an instruction should be **reported as a record**, not executed.
+- **Every write enters the journal**, so memory changes show up in the browser's "Workspace changes" like any file change. **Memory whose changes are visible is memory that can be rewound.**
+- **`bash` is not covered by this layer** (it is, as always, not path-restricted).
+- **The subagent does not get memory,** withheld by depth just like `todo`: the sub lives one run, the notes have no reader, and "what I know about this project" must have exactly one writer.
+- The directory lists only **two levels deep**, at most **40 entries / 4KB**; over that, it says so and points to `ls` for the full view.
+- **There is no size cap on writes,** and **no automatic expiry or GC** — for now it only surfaces "how long ago" so you and the model can both see it. To clean up, delete yourself, or have it delete.
 
 ## Security Boundary
 
-> 📝 **TODO**: translate from [## 安全边界](#安全边界).
+Not a sandbox, just slip-proofing:
+
+- Paths of `read` / `ls` / `find` / `grep` / `write` / `edit` are confined to the working directory; `../` escapes are refused. Two extra roots, asymmetrically, on purpose: a loaded **skill directory is read-only** (the four read tools enter, `write` / `edit` cannot — the model cannot rewrite its own instructions); the **memory directory is writable** (all six enter, because it must be able to correct its own notes). These are two **different fields** on `tools.Options`, so no caller can turn a skill bundle writable by passing the wrong boolean. The escape check still applies inside the memory directory.
+- The check resolves symlinks before comparing prefixes, so "a link inside root pointing outside" is caught. **On case-insensitive volumes (macOS / Windows default) it asks the filesystem one more question**: there, `/Users/x` and `/users/x` are two spellings of the same directory, and resolving symlinks does not normalize case, so legitimately different spellings of the same path used to be refused. Now, when byte comparison fails, device+inode is used to confirm whether two spellings are the same directory — **what's folded is the comparison, not the judgment**, because on case-sensitive volumes `/tmp/Foo` and `/tmp/foo` really are two directories, and treating them as one would be an actual hole.
+- `bash` **does not** have this restriction (it is a shell), but it has a 120-second timeout and output truncation. When output exceeds the cap, the full version is written to a temp file and its path is reported — **only after the whole thing is on disk is the path reported**; on write failure it says plainly "could not store" rather than handing back a path to an empty file.
+- The command string is passed as a single argv to `bash -c`, no string concatenation, no injection surface.
+- Cancellation kills the whole process group, not just `bash` itself. Otherwise grandchildren like `(sleep 60; ...) &` would survive and be reaped by init — and the point of cancelling a turn was to stop the `go test` it started.
+- `-web` binds to `127.0.0.1` only by default, a token is always required, cross-origin requests are always refused; `bash` requires human approval under `standard` mode.
+
+What `bash` can do is what you could do yourself in a terminal. Before running it in an untrusted environment, add isolation yourself (container, dedicated user). The approval gate is there to give a human one confirmation step, not a security boundary — in particular, do not expect it to stop anything; under `auto` mode it is not present at all.
 
 ## Sessions
 
-> 📝 **TODO**: translate from [## 会话](#会话).
+Every run writes a JSONL session file, by default under `~/.pi-go/sessions/` (`PIGO_SESSION_DIR` to change).
+
+```bash
+pi-go -resume last -p "continue the previous change"          # most recent session
+pi-go -resume ~/.pi-go/sessions/xxx.jsonl                     # a specific file
+```
+
+The record is a **tree, not a list**, each entry carrying `{id, parentId}`:
+
+```
+c45d1bf3 <- root      meta
+e9893029 <- c45d1bf3  user
+1b3a5e73 <- e9893029  assistant
+```
+
+A linear conversation is just a tree with no branches. The point of keeping the parent chain: a future "go back to that turn and retry" reads a different leaf rather than rewriting the file.
+
+**resume reads back the session's metadata.** Without `-model`, it uses the model that session originally used, not the default. When the working directory or skills disagree with the record, it warns on stderr — it does not block (continuing from a different directory is a legitimate need), but all of these change behavior without appearing in any message, so they should not happen silently. The warning goes to stderr, so `-p` can still be piped directly.
+
+**On file corruption it recovers what it can and says so.** A partial last line left by a killed process is silently skipped (the normal case); a corrupted middle line prints a diagnostic, re-links the broken parent chain in file order, and salvages the history before the corruption. Files with branches are not stitched this way, only reported. See `docs/harness-design.md` §8.
 
 ### Context composition: the half the usage bar can't answer
 
-> 📝 **TODO**: translate from [### 上下文构成：占用条回答不了的那半](#上下文构成占用条回答不了的那半).
+The usage bar in the top bar and the terminal dock tells you "62% full," `/usage` tells you "how much was spent." **Neither tells you what those tokens are**, and that is exactly the only question with action value — history bloated by tool output can be mechanically evicted and reread on demand, history bloated by conversation text can only be summarized and compressed. The costs of these two paths are completely different; not measuring is guessing.
+
+So at the end of each run, a composition snapshot is recorded on disk, and `-analyze-session` reads it out:
+
+```
+Context Composition (last recorded state, estimated):
+  Fixed (system prompt + tool schemas): 1999 (7%)
+  Tool results:                         27000 (90%)
+    read                               24300 (81%)
+    bash                               2700 (9%)
+  Tool call arguments:                  82 (0%)
+  Assistant text:                       900 (3%)
+  User text:                            15 (0%)
+  Estimated total:                      29996 over 13 message(s)
+  Provider's own count:                 29100  (estimate reads 0.97x, i.e. high)
+```
+
+Three reading conventions, each shaped by a pitfall that was hit:
+
+**This is a snapshot, not a delta.** Every other field in Stats is "incremental since the last record," because the analyzer sums them; this one is not — it describes the **entire history** at the moment the record was written, so the latest one is the answer, and summing across records is meaningless. The analyzer therefore overwrites rather than accumulates. This is the project's third arithmetic trap of the same shape (the first two: `CacheRead` is a subset of `Input`, `Delegated` is a subset of `Usage`), hence spelled out.
+
+**Composition is estimated, total is measured.** Bytes counted at 4 bytes = 1 token, the same divisor `agent.New` uses to estimate fixed overhead — two numbers on the same record must be comparable to each other, and an inconsistent divisor is not just inaccurate but meaningless. Trust the shares, not the absolute values.
+
+**That last ratio is the point, and its direction is opposite to what was written here originally.** `Provider's own count` is the server-side measurement, and the ratio of the two is "how wrong this divisor is for this session's text." **The ceiling on the precision of any token-based threshold anyone sets later is this number** — which is why it is recorded rather than assumed.
+
+What used to be asserted here was "4 bytes/token is roughly right for English, off by about 2.5× for Chinese (the estimate is low)." After back-of-envelope from 25 real multi-turn sessions, **on both providers it is the other way**:
+
+```
+ASCII-heavy prompts       median ratio 0.98   (n=9)
+High-Chinese-share prompts median ratio 0.83   (n=11, lowest 0.60, non-ASCII share 92%)
+Overall                   median 0.97         range 0.51 – 1.11
+```
+
+**The estimate runs high, and it runs highest for Chinese.** The reason is that both vendors' tokenizers are trained on Chinese: a two-character word is 6 bytes but often counts as a single token, so the real divisor for that text is close to 6, not 4. In other words, **4 bytes/token is on the conservative side on these two providers, not the dangerous side** — worth knowing before anyone tightens a threshold based on it.
+
+A corollary that later moved the default: **the old trigger line was too early.** `auto` used to be half the window, and that was in **estimated** tokens — converted via the ratios above, that is only **42%–49% of the window measured**, i.e., more than half the window was genuinely empty when cleaning started. It is now **four-fifths of the window**; see "Context cleaning."
+
+**"How much was cleared" is now also recorded, and it is a precondition for that ratio to hold.** `Estimated` describes the whole history; `Measured` counts **the prompt actually sent after cleaning** — the two numbers cover different text, and dividing them directly is not the tokenizer ratio. Sessions where cleaning triggered used to report the estimate as absurdly high, and the reader would blame the divisor. The report now carries an extra `Cleared from the last prompt` line, and the ratio is computed as `Estimated − Cleared`.
+
+A methodological pitfall, also recorded here: **a session that has delegated carries the sub's tokens in its usage counter**, and comparing that against the estimate of the parent's own history would report the divisor as off by two orders of magnitude (one measured case: 6,848,391 vs 36,230, of which 6,812,682 was the sub's). In the implementation, `Measured` takes `LastInput()` — a number from one of the parent's own responses — so it does not have this problem; but any probe that sums usage records does.
+
+Thinking blocks are not counted: they are not sent back to the provider (that case in `llm/convert.go` is empty), and counting them would make the estimate permanently higher than measured, turning the ratio above into a garbage number. Same for `Details` — they never reach the provider.
 
 ### Turn distribution: where `-max-turns` numbers come from
 
-> 📝 **TODO**: translate from [### 轮次分布：`-max-turns` 的数从哪来](#轮次分布-max-turns-的数从哪来).
+The same command, given a directory (or the literal `sessions`, resolving to your own session dir), answers a different question: **how many turns does a run actually take**. This is the number a `-max-turns` choice should be based on — a fixed cap set at the 75th percentile of one's own distribution is the sweet spot measured in the literature (arXiv 2510.16786), and pi-go has its own history, so it measures its own rather than copying someone else's.
+
+```
+$ pi-go -analyze-session sessions
+Run Length Distribution: ~/.pi-go/sessions
+================================================================================
+
+Population:
+  Sessions read: 102
+  Runs:          116
+    finished (reached an answer):   110
+    unfinished (cut off):           6
+    no tool call, excluded:         22
+  Population:    88 (finished, called at least one tool)
+
+Turns per run (n=88):
+  p50: 3
+  p75: 5
+  p90: 9
+  p95: 13
+  max: 25
+  mean: 4.3
+```
+
+Four reading conventions, each a "measure it this way or measure it wrong" pitfall:
+
+**The unit is the run, not the session.** A transcript contains several runs and possibly rewound-and-abandoned branches — counting turns by session is wrong twice in the upward direction. The analyzer walks only live branches along the parent chain and re-segments by prompt: abandoned branches were cut by a human, they are not turns the live work needed.
+
+**A cut-off run is a lower bound, not an observation.** A run that hit the cap, was Ctrl-C'd, or dropped at turn N had live-needed turns ≥ N; mixing it into the percentiles pushes every number down, hardest at the tail — and the cap is chosen exactly from the tail. So they are excluded from the percentiles and listed separately by value: a cluster sitting on the same number is the only evidence that "there used to be a cap here" (the transcript does not record `-max-turns`); a scattered few reports plainly that they do not constitute evidence. When the censored share is too high, the report warns outright: the p75 is a floor, not an answer.
+
+**Runs that never called a tool are excluded.** They end on turn one, carry no information about caps, and are numerous enough to drag the whole distribution down — measured, mixing them in moves the local p75 from 5 to 4 and p90 from 9 to 6, and the cap would be chosen based on "how much pure Q&A is in this history."
+
+**The reminder at the end of the report is not a pleasantry.** The premise under which this distribution can be used to choose a cap is that this history looks like the work that will later be capped — interactive Q&A history will not contain unattended tasks, and the latter is the scenario a cap actually constrains.
+
+**The use of this number is a soft cap** (`-soft-turns`, default 10). Hitting the soft cap does not end: a checkpoint message is injected telling the model "how many turns used, the soft cap, the hard cap," then a binary choice — wrap up, or continue and explain in one sentence what's still missing. **There is no parser**: the model's next action is the decision itself — calling another tool is an extension, a pure text answer is completion, going through the same end path as before. The mechanism guarantees two things: the decision was made informed, and "what's missing" lands in the transcript and is auditable. Extension needs no counter of its own; `-max-turns` is its cap. The checkpoint goes through the existing steering event path, visible automatically in JSON mode, web, and transcript; the `[pi-go]` prefix marks it as harness-written. Web sessions have it fixed off (same reason as budgets: in a browser, a human is watching).
 
 ### Chained runs: reset, not compress
 
-> 📝 **TODO**: translate from [### 链式运行：reset 而不是压缩](#链式运行reset-而不是压缩).
+Above the soft cap there is one more layer: `-max-runs <n>` (`-p` only, default 1). When a run ends because **a budget was exhausted** — turn limit, token/cost/time budget, i.e., the ones in `end_reason` whose disposition is `continue` — the session forks a new branch, and a fresh run with an empty context picks up. This is reset, not compress: not a word is summarized, the old transcript stays in the same file as an abandoned branch, both ends traceable.
+
+The handoff vehicle is **`handoff.md`**: when chaining is on, the system prompt gets an extra section telling the model its context will not carry to the next leg, and asking it to maintain in `.pi-go/handoff.md` "the task in one sentence / what's done and how it was verified / what's left." The new run's opening prompt carries the original request verbatim (`<original_request>`, the same peg as `/compact`) + the handoff protocol: read handoff first, if there is a verification method then verify before starting, if the file does not exist then rebuild state from the workspace yourself. **The file shape is Markdown, not JSON** — a machine-checked contract is the job of step 8 (the evaluator); specifying fields before there is a checker is ceremony.
+
+Two judgments are pinned by tests (`chain_test.go`): which `end_reason`s hand off (`turn_limit`/`token_budget`/`cost_budget`/`time_budget`/`max_tokens`), which don't (`stagnation` and `context_overflow` will just fail the same way on rerun, `transport_error`/`aborted` are unrelated to the task — this table is exactly the dispositions of §12.1, the link just reads it). Web sessions and REPL do not use this flag: with a human present, the word "continue" is cheaper than the mechanism.
+
+Measured shape (`-max-turns 4 -max-runs 3`, a file-writing task needing 6+ turns): three legs completed the handoff, handoff.md wrote out the three Task/Done/Left sections per protocol.
+
+**The adjudicator: `-evaluate` (default off).** Without it, the driver can only trust the run's own claims: "done" is what the model says, "not done" only means the cap interrupted it — and the case where the last leg spent its turns doing the work and the wrap-up answer didn't fit the budget is real (the work is done but the exit code is 1). Turned on, a **fresh read-only agent** (read/ls/find/grep, no bash/write/edit — the shape of an explore sub) speaks at two decision points: when some leg claims completion (if it fails, the findings hand off to the next leg, within the run budget); and when the runs are exhausted and the end reason is a budget-class one (if verification passes, it still exits 0). The adjudication protocol is one line `PASS` / `NEEDS_WORK` + concrete findings; **when the evaluator itself fails, it changes no outcome** — the behavior without it is the fallback.
 
 ## Context Cleaning (context editing)
 
