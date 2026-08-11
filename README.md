@@ -1374,43 +1374,185 @@ Note: piped input **always triggers one-shot mode** and never enters the REPL. O
 
 ## JSON Output: `-mode json`
 
-> 📝 **TODO**: translate from [## 给程序读的输出：`-mode json`](#给程序读的输出--mode-json).
+`-mode text` (the default) renders for humans and behaves exactly as before. `-mode json` only swaps the renderer: **stdout emits one JSON event per line, the first line being a session header**, the rest being loop events.
+
+```bash
+pi-go -mode json -p "find dead links in the README" | jq -c 'select(.type=="tool_start") | {name, args}'
+```
+
+Two rules decide whether this can be trusted by programs:
+
+**stdout carries only data.** Everything meant for humans — the `resumed` notice, drift warnings, retry notifications — goes to stderr. This holds in `text` mode too: the `resumed` line used to print on stdout, so `pi-go -resume last -p ... | jq` got a non-data first line; that was a bug, fixed along the way.
+
+**Event names share one contract with the browser UI** (the `wire` package). `turn_start` / `thinking` / `token` / `message` / `tool_args` / `tool_start` / `tool_partial` / `tool_end` / `user_message` / `run_end` — these 10 names have a single definition; the SSE stream and the JSONL stream do not speak two dialects. Tool arguments, even when the model emits broken JSON, are wrapped as a string before going out — one bad tool call should not make the whole stream unparseable.
+
+`json` mode has no REPL: it requires `-p` or piped input, otherwise it errors out. Reading stdin line by line is the shape of the protocol, not the shape of a one-shot run. `-quiet` is a no-op in `json` mode and warns on stderr — filtering events would hand consumers a stream with holes.
 
 ### Why a run ends: `run_end.end_reason`
 
-> 📝 **TODO**: translate from [### 一次运行为什么结束：`run_end.end_reason`](#一次运行为什么结束run_endend_reason).
+`run_end` carries two reason fields, and they **do not answer the same question**:
+
+| Field | Whose vocabulary | What it answers |
+|---|---|---|
+| `stop_reason` | the provider's | why **this one reply** ended (`end_turn` / `tool_use` / `max_tokens` / `aborted` / `error`) |
+| `end_reason` | pi-go's own | why **this one run** ended |
+
+Only the latter can express "turn limit" — that is a harness-level decision with no counterpart in the OpenAI protocol. So a run hitting `-max-turns` used to look like this in production: `stop_reason` was absent, and only a line of English prose sat in `error`.
+
+```bash
+pi-go -mode json -p "..." | jq -r 'select(.type=="run_end") | .end_reason'
+```
+
+Ten values, and **what to do when you see each**:
+
+| `end_reason` | Meaning | Suggested action |
+|---|---|---|
+| `completed` | the model finished, no pending injection | done |
+| `turn_limit` | hit `-max-turns` | continue: transcript is intact, start a new run to pick up |
+| `token_budget` | hit `-token-budget` | continue |
+| `cost_budget` | hit `-cost-budget` | continue |
+| `time_budget` | hit `-time-budget` | continue |
+| `max_tokens` | the model's own output cap truncated the reply | continue (you are continuing a sentence, not a task) |
+| `stagnation` | N consecutive turns with identical tool results | **intervene**: re-running with nothing changed will trigger it again at the same turn |
+| `context_overflow` | prompt too large, and forced cleaning has nothing left to clean | **intervene**: what helps is `/compact`, which is a separate mechanism |
+| `transport_error` | the model call failed (network, auth, 5xx) | stop: this is not a task problem |
+| `aborted` | ctx cancelled (Ctrl-C, run timeout, server shutdown) | stop: someone stopped it on purpose |
+
+The last four are the reason this field exists. The most natural reading — "retry on anything not equal to completed" — is wrong for all four, and wrong in different ways: two spin in place, two burn money repeatedly on a condition that was never cleared. The classification table lives in `agent/endreason.go`, and one test requires every value to be registered in the table, so adding a new value forces you to answer "what should a driving script do with it" — it cannot silently inherit a default.
+
+**Unregistered values are always treated as "stop".** The cautious direction is asymmetric: an unattended driver that stops because it cannot read a value costs one stuck task; continuing costs an unbounded number of runs.
+
+`stop_reason` is unchanged and is not replaced by this field — both are emitted. `end_reason` is **additive**; consumers written before this field existed see no difference.
 
 ## The Eighth Tool: subagent
 
-> 📝 **TODO**: translate from [## 第八个工具:subagent](#第八个工具subagent).
+The model can delegate a self-contained piece of work to a **subagent** — a separate pi-go subprocess with its own context window:
+
+```
+> have one subagent trace the auth middleware call chain while another runs the full test suite
+```
+
+It solves context pollution: exploring an unfamiliar module, running a test suite that produces thousands of lines of output — these byproducts you will never look at again, yet they permanently occupy the main conversation's context. A subagent keeps them inside its own window; **only the final conclusion returns to the parent**. Dispatching several in one message runs them in parallel; the default cap is 2.
 
 ### Two modes: the line is "can it mutate things"
 
-> 📝 **TODO**: translate from [### 两个模式,分界是「能不能改东西」](#两个模式分界是能不能改东西).
+`mode` is required, with no default. The two modes return different things, and the cost of guessing wrong is asymmetric in both directions: defaulting to `explore` makes a "go fix this bug" delegation come back quietly with a recommendation and zero changes — reading like success; defaulting to `edit` builds a checkout and a commit for a question that only needed an answer.
+
+| | `explore` | `edit` |
+|---|---|---|
+| Tools | read / ls / find / grep | plus write / edit / bash |
+| Working dir | **your directory** | its own git worktree (from HEAD + your uncommitted changes to tracked files) |
+| Sees uncommitted new files | yes | no (worktree is based on HEAD) |
+| Hands back | an answer | an answer + a commit |
+| Requires a git repo | no | yes |
+
+**`explore` does not build a worktree — this is a conclusion, not an optimization.** A session with no bash, no write, no edit cannot change anything — isolation is provided by "the tools are absent," structurally, not by any check. With nothing to protect, a worktree would only add cost; and it has a real cost: a worktree is built from HEAD plus a diff of tracked files, so **files you just created and haven't committed are simply not in it**. Have an `explore` sub explain how some module works and it answers against a copy of the codebase missing its newest parts. Running in your own directory has no such problem — it reads the same files you do.
+
+A side effect: `explore` works in non-git directories; `edit` does not.
+
+**`edit`'s result comes back as a commit, not into your working tree.** What the sub changed is committed and pinned at `refs/pi-go/sub/<id>` (not under `refs/heads/`, so `git branch` does not see it); the parent gets a SHA and a line it can run directly: `git show <ref>` to look, `git cherry-pick <sha>` to apply. Whether to merge it back is an explicit decision — under `-web`, `git cherry-pick` goes through bash, so that step still goes through approval.
+
+Worth noting: "run the tests and tell me what failed" counts as **edit**, even though it has no intention of changing anything: tests write build artifacts, temp files, caches. The rule is **bash implies worktree** — a subprocess holding bash in your own directory means no isolation, regardless of its other tools. So there is no useful third gear between these two modes.
+
+**The sub's tool set differs from the parent's, and that asymmetry is the security property:**
+
+- **No subagent** — it cannot delegate further down. Nesting depth is written into the sub's environment by the parent and is not model-writable; a read-only sub does not get this tool at any depth, otherwise the "cannot mutate" promise could be bypassed by delegating an `edit` child.
+- **No git** — git is the only tool that can pierce the shared `.git` (see next section), and the sub needs to run tests, not manage branches. That commit is run by the parent after verifying the worktree's identity.
+- **bash is present, but fenced against escapes** (edit mode only): a command that mentions the main checkout's path, redirects like `GIT_DIR=`, or `cd`s outside the worktree is refused with a message telling the model what to do instead. This is enumeration at the "don't slip" level, not a sandbox.
+
+Mode and depth travel via **environment variables** rather than flags: the model can propose flags through the very tool it is calling, but it can never write to the environment of the process the parent opened for it. This makes "you are read-only" something the model cannot argue with.
 
 ### The subagent is told what it is
 
-> 📝 **TODO**: translate from [### 子 agent 会被告知自己是什么](#子-agent-会被告知自己是什么).
+Each of the two modes has a fenced prefix prepended to the task. This is not decoration; it was measured:
+
+- **explore sub**: in a real run, a read-only sub had already derived the answer by turn 2, then decided to "run the tests to confirm" — claiming this was a read-only operation — and spent the remaining three turns hunting for a way (`grep go.mod`, `ls`, reading `go.mod`), hit the turn limit, and lost the answer. The cause: **nothing told it what it was**. The tool list had no shell, but "the tool does not exist" is a silence, and the model read that silence as "keep looking." So that prefix explicitly states the capability is absent, that it is not worth finding, and **spells out the alternative**: write out the command you were going to run and stop; the parent can run it.
+- **edit sub**: spells out what its checkout is missing (uncommitted changes that didn't come along, which ignored directories are absent, what uncommitted new files the parent has).
+
+**Both halves contain "what you are," and they appear unconditionally.** The symptom in the edit-sub measurement: it finished its work, tried to read back its own commit hash, found there was no git, and reported to the parent "cannot get commit hash" — a problem that did not exist, which the parent then had to spend words explaining away. This information existed, but only in two places the subs could not see: the tool description the parent read, and the Guard's rejection message (which only arrives after it has already wasted a turn trying). Same shape as the explore case: **the sub was learning the rules by running into walls.**
+
+The "what's missing" half is conditional and does not appear in a clean repo. These two halves are different kinds of statements: what a subagent **is** does not change across runs, while a warning that fires every time is one no one reads by the time it should fire.
 
 ### Merge conflicts: the parent handles them serially, pi-go does not auto-resolve
 
-> 📝 **TODO**: translate from [### 合并冲突:父串行处理,pi-go 不自动解](#合并冲突父串行处理pi-go-不自动解).
+Industry consensus is to not auto-resolve: an automatic process merges by syntax, not intent. pi-go's parent is single-threaded anyway, so "one coordinator merges serially" is structural rather than conventional. On conflict, git's own output tells the model about `--continue` / `--abort`; the parent has bash and can handle it.
+
+But there is one state that must be blocked, and it was measured: **while the parent's checkout is mid git-operation, refuse to create a new worktree.** Because `carryDirty` copies `git diff HEAD` into the new checkout, and during a conflict that diff **carries the conflict markers** — apply succeeds, and the first line the sub sees when opening a file is `<<<<<<< HEAD`. It then either analyzes text that is nobody's, or picks a side and commits a merge conclusion no one asked for. And "switch to starting from a clean HEAD" would silently drop what the parent was doing, which is worse.
+
+What's detected is git's own marker files (`CHERRY_PICK_HEAD`, `MERGE_HEAD`, `REVERT_HEAD`, `rebase-merge/`, `rebase-apply/`, `sequencer/`) plus unmerged paths in the index — the latter catches "markers cleared but files still in conflict state." Mid-rebase counts even without a conflict, because HEAD there is a temporary commit, and using it as a diff base describes a state that will not exist later.
 
 ### A subagent's commit is an auditable record
 
-> 📝 **TODO**: translate from [### subagent 的 commit 是一条可审计记录](#subagent-的-commit-是一条可审计记录).
+In a real run the parent split one change between two subagents; both tasks began with the same framing sentence, so `git log --oneline` came out with two **identical** messages — the parent itself noticed and offered to rebase to fix it.
+
+pi-go cannot summarize a diff without spending one more model call, so it does not pretend to. What it can do is make each commit distinguishable and explainable:
+
+```
+subagent sub371c5ae6: fix an off-by-one bug in the `Admit` function in `store/store.go`.
+
+    Task as delegated:
+        ...
+    Reported by the subagent:
+        ...
+    Transcript: ~/.pi-go/sessions/20260806T...jsonl
+```
+
+The id is in the subject, so two of them are always separable and traceable back to the run that produced them; the body carries the original task, the sub's self-report, and the transcript path. `git log --oneline` stays scannable, `git show` answers "why is this line like this," and the answer reaches a transcript rather than stopping at a hash.
 
 ### Reading the subagent's transcript and how much it cost
 
-> 📝 **TODO**: translate from [### 读子 agent 的 transcript,以及它花了多少](#读子-agent-的-transcript以及它花了多少).
+`details.session` is exactly the sub's own transcript path; analyze it directly:
+
+```bash
+pi-go -analyze-session ~/.pi-go/sessions/20260806T133827Z-b27149a5.jsonl
+pi-go -analyze-session <path> -analyze-format json     # for programs
+```
+
+`-resume <path>` **continues** that session (appends to it), it does not read it; and an `edit` sub's cwd is a worktree that has already been reclaimed, so reading uses `-analyze-session`.
+
+**One point about cost that must be made clear:** a transcript records the **entire** cost of that run, **including the delegated parts**. The parent's counter already folds in the sub's tokens (that is exactly how `-token-budget` can govern delegation), so the parent's transcript answers "how much did this session cost in total," while each sub's own transcript is the itemization. One measured run: parent 14635 in, of which 9291 was the sub's.
+
+**So these numbers cannot be summed across transcripts.** Spelled out on purpose, because the arithmetic looks additive, and it is not.
+
+The parent's report now splits this account itself, so you don't have to analyze each sub transcript:
+
+```
+Token Usage:
+  Input Tokens: 16212 (avg: 8106, max: 16212)
+  Output Tokens: 2454 (avg: 1227, max: 2454)
+    of which delegated to subagents: 10647 in, 1544 out
+    spent by this agent itself:      5565 in, 910 out
+```
+
+`delegated` is a **subset of `usage`, not a sibling**: subtract, don't add. These two numbers are fixed by completely different decisions — large total with little delegation means the conversation itself is expensive, so compact or switch to a cheaper model; the reverse means delegation is expensive, so delegate less or narrower. A single total cannot distinguish these two cases, and "3–10× tokens" is exactly the common reason a human looks at this report. Sessions that never delegated simply don't show these two lines.
+
+Measured: all three sides agree — parent 16212 = self 5565 + delegated 10647, and that 10647 matches both **the sub's own transcript total** and the number the subagent tool reported in details.
 
 ### In the browser: a subagent has its own card
 
-> 📝 **TODO**: translate from [### 浏览器里:subagent 有自己的卡片](#浏览器里subagent-有自己的卡片).
+A subagent is not "a tool call that runs a bit long"; it is another agent, with its own turns, its own tool calls, its own way of ending. So the parent **forwards the sub's events verbatim** instead of forwarding a summary — what the sub says is already the same event contract as the parent's consumers (the one from Phase 0), just one level down, so the code that renders a run can render a delegation.
+
+- **Collapse is the default, and collapse is not hiding**: it shows the most recent event and follows along as the run progresses. This is the state the card is in most of the time (several delegations running at once, none of them the one you are inspecting), so it must be informative on its own.
+- **Expand** shows the full event list (turn boundaries, each tool call and its success/failure), the sub's final answer, and two commands you can run directly: `git show <ref>` and `pi-go -analyze-session <sub's transcript>`.
+- The scroll-follow rule after expanding is the same as in the terminal: follow the tail unless you have scrolled up yourself — re-canceling someone else's scroll on every incoming event is the standard way to make auto-scrolling logs unusable.
+
+Two implementation tradeoffs were measured, not guessed:
+
+**Forwarding uses an allow-list, not a deny-list.** The first version only excluded per-token increments; in measurement, 20 of 50 frames were **`thinking`** (40%) — another incremental stream, arriving twenty times across four turns with no UI showing any of it. Switching to an allow-list cut **50 → 22 frames**. A deny-list has to be re-audited every time the event contract grows, and the cost of a missed audit is a silent flood.
+
+**`tool_start` and `tool_end` are paired by `call_id`, never by name.** Subs run tools in parallel; a measured turn had three `grep`s, and **the completion order did not match the start order** (`ls start / read start / read ok / ls ok`). Pairing by name would attach results to the wrong call.
+
+Frames, like live output, **do not enter the log** — a talkative delegation should not make every reconnect more expensive. They collapse onto the pending call, so a browser that opens the page mid-flight can still see the part that already happened. The cap is by **count**, not bytes: a frame is a complete event, dropping the oldest one loses one line of history, while slicing by bytes would hand the client half an event.
+
+The logic that projects frames into those rows in the card lives in `agent/timeline.ts` (that file deliberately does not import Vue, precisely so it can be unit-tested without spinning up a component), not inside a component — it had already burned us once, so the last place it should be is inside an SFC. That rule about pairing by `call_id` was verified by **mutation testing**: flipping it back to pair-by-name makes exactly one of 53 tests go red, and it is the same-name-parallel one. So the other case (different names, out-of-order completion) is merely recording the shape, has no discriminating power, and the comment says so — you must not delete the same-name case just because it "looks redundant."
+
+The model selector also picked up two fields the backend had long been emitting but the UI was not showing: an unconfigured model now states **which env var is missing** (the terminal prints its own hint; the browser cannot), and the current model, if `subagent_model` is configured, gets a note next to it reading "subagent: xxx" — that is a property of "the configuration currently in effect," not a basis for picking one, so it sits next to the selector rather than repeated on each row.
 
 ### `-max-turns` is not propagated downward
 
-> 📝 **TODO**: translate from [### `-max-turns` 不往下传](#max-turns-不往下传).
+The parent's turn cap constrains the parent's run, and the sub is **a different run**: how many steps a delegated task needs has nothing to do with how much conversation budget the parent has left. Propagating it would mean `-max-turns 4` (intended as "don't let it ramble") silently becomes "and also hobble all the work you delegated" — this was hit in measurement: the sub spent four turns reading files and returned nothing.
+
+Model inherited, turn budget not, looks inconsistent — but ask "what does each measure" and it clears up: changing the model changes the answer; changing the turn budget only changes how many steps are allowed to reach it. The sub's cost is still bounded by `subagent`'s own timeout (10 minutes) and rolled up into the parent's token budget, which are the tools designed for cost.
 
 ## Isolated Parallel Sessions: worktree
 
