@@ -1,4 +1,8 @@
+<a id="top"></a>
+
 # pi-go
+
+**简体中文** | [English](#english)
 
 用 Go 写的极简 coding agent，对标 [pi](https://github.com/earendil-works/pi) 的 harness 设计。
 
@@ -1209,3 +1213,257 @@ glm-5.2 原来在目录里写的是 200,000，**错了五倍**。厂商自己的
 同一次探针把 kimi 的数字**确认为完全正确**：`kimi-for-coding` 对同一个 body 回的是「Your request exceeded model token limit: 262144」。一个 provider 的目录值是对的、另一个错了五倍——这就是为什么这类常量该被重新量，而不是被信任。
 
 这条不写测试：一个常量的值没法靠单测来辩护，能辩护它的是上面那次探针和这段记录。
+
+---
+
+<!-- ============================ ENGLISH ============================ -->
+
+<a id="english"></a>
+
+# pi-go
+
+[简体中文](#top) | **English**
+
+> A minimal coding agent written in Go, a harness reimagining of [pi](https://github.com/earendil-works/pi).
+
+> One loop, nine tools, one protocol. **Zero third-party dependencies except for the browser terminal**: `creack/pty` and `nhooyr.io/websocket` only serve the browser-terminal path (`web/terminal.go` and the upgrade point in `server.go`); everything else is stdlib.
+
+## Contact
+
+Scan to add the author on WeChat:
+
+<p align="center">
+  <img src="assets/wechat-qr.jpg" alt="Author WeChat QR code" width="240" />
+</p>
+
+## Installation
+
+> 📝 **TODO**: translate from [## 安装](#安装).
+
+## Configuration
+
+> 📝 **TODO**: translate from [## 配置](#配置).
+
+## Quick Start
+
+> 📝 **TODO**: translate from [## 快速开始](#快速开始).
+
+## Two Run Modes
+
+> 📝 **TODO**: translate from [## 两种运行模式](#两种运行模式).
+
+## Command-Line Flags
+
+> 📝 **TODO**: translate from [## 命令行参数](#命令行参数).
+
+## JSON Output: `-mode json`
+
+> 📝 **TODO**: translate from [## 给程序读的输出：`-mode json`](#给程序读的输出--mode-json).
+
+### Why a run ends: `run_end.end_reason`
+
+> 📝 **TODO**: translate from [### 一次运行为什么结束：`run_end.end_reason`](#一次运行为什么结束run_endend_reason).
+
+## The Eighth Tool: subagent
+
+> 📝 **TODO**: translate from [## 第八个工具:subagent](#第八个工具subagent).
+
+### Two modes: the line is "can it mutate things"
+
+> 📝 **TODO**: translate from [### 两个模式,分界是「能不能改东西」](#两个模式分界是能不能改东西).
+
+### The subagent is told what it is
+
+> 📝 **TODO**: translate from [### 子 agent 会被告知自己是什么](#子-agent-会被告知自己是什么).
+
+### Merge conflicts: the parent handles them serially, pi-go does not auto-resolve
+
+> 📝 **TODO**: translate from [### 合并冲突:父串行处理,pi-go 不自动解](#合并冲突父串行处理pi-go-不自动解).
+
+### A subagent's commit is an auditable record
+
+> 📝 **TODO**: translate from [### subagent 的 commit 是一条可审计记录](#subagent-的-commit-是一条可审计记录).
+
+### Reading the subagent's transcript and how much it cost
+
+> 📝 **TODO**: translate from [### 读子 agent 的 transcript,以及它花了多少](#读子-agent-的-transcript以及它花了多少).
+
+### In the browser: a subagent has its own card
+
+> 📝 **TODO**: translate from [### 浏览器里:subagent 有自己的卡片](#浏览器里subagent-有自己的卡片).
+
+### `-max-turns` is not propagated downward
+
+> 📝 **TODO**: translate from [### `-max-turns` 不往下传](#max-turns-不往下传).
+
+## Isolated Parallel Sessions: worktree
+
+> 📝 **TODO**: translate from [## 隔离的并行会话:worktree](#隔离的并行会话worktree).
+
+### `.worktreeinclude` and "what a clean checkout is missing"
+
+> 📝 **TODO**: translate from [### `.worktreeinclude` 与「一个干净检出缺什么`](#worktreeinclude-与一个干净检出缺什么).
+
+## Browser UI
+
+> 📝 **TODO**: translate from [## 浏览器界面](#浏览器界面).
+
+### File panel in the browser
+
+> 📝 **TODO**: translate from [### 浏览器里的文件面板](#浏览器里的文件面板).
+
+### Terminal in the browser
+
+> 📝 **TODO**: translate from [### 浏览器里的终端](#浏览器里的终端).
+
+### Workspace changes
+
+> 📝 **TODO**: translate from [### 工作区改动](#工作区改动).
+
+### Rewind and checkpoint
+
+> 📝 **TODO**: translate from [### 撤回（rewind）与 checkpoint](#撤回rewind-与-checkpoint).
+
+### Session sidebar: rename and pin
+
+> 📝 **TODO**: translate from [### 会话侧栏:重命名与置顶](#会话侧栏重命名与置顶).
+
+### Picking a workspace when creating a session
+
+> 📝 **TODO**: translate from [### 新建会话时选工作区](#新建会话时选工作区).
+
+## Models
+
+> 📝 **TODO**: translate from [## 模型](#模型).
+
+### Adding your own provider and model: `~/.pi-go/providers.json`
+
+> 📝 **TODO**: translate from [### 加自己的 provider 和模型:`~/.pi-go/providers.json`](#加自己的-provider-和模型pi-goprovidersjson).
+
+#### `price`: the sole input to `-cost-budget`
+
+> 📝 **TODO**: translate from [#### `price`：`-cost-budget` 唯一的依据](#price-cost-budget-唯一的依据).
+
+#### Why it only reads home, not the project dir
+
+> 📝 **TODO**: translate from [#### 为什么只读 home,不读项目目录](#为什么只读-home不读项目目录).
+
+## Interactive Mode Commands
+
+> 📝 **TODO**: translate from [## 交互模式命令](#交互模式命令).
+
+## Tools
+
+> 📝 **TODO**: translate from [## 工具](#工具).
+
+## The Ninth Tool: todo
+
+> 📝 **TODO**: translate from [## 第九个工具:todo](#第九个工具todo).
+
+### This tool holds no state
+
+> 📝 **TODO**: translate from [### 这个工具不持有任何状态](#这个工具不持有任何状态).
+
+### The subagent does not get this tool
+
+> 📝 **TODO**: translate from [### subagent 拿不到这个工具](#subagent-拿不到这个工具).
+
+## skills
+
+> 📝 **TODO**: translate from [## skills](#skills).
+
+## Cross-Session Memory
+
+> 📝 **TODO**: translate from [## 跨会话记忆](#跨会话记忆).
+
+## Security Boundary
+
+> 📝 **TODO**: translate from [## 安全边界](#安全边界).
+
+## Sessions
+
+> 📝 **TODO**: translate from [## 会话](#会话).
+
+### Context composition: the half the usage bar can't answer
+
+> 📝 **TODO**: translate from [### 上下文构成：占用条回答不了的那半](#上下文构成占用条回答不了的那半).
+
+### Turn distribution: where `-max-turns` numbers come from
+
+> 📝 **TODO**: translate from [### 轮次分布：`-max-turns` 的数从哪来](#轮次分布-max-turns-的数从哪来).
+
+### Chained runs: reset, not compress
+
+> 📝 **TODO**: translate from [### 链式运行：reset 而不是压缩](#链式运行reset-而不是压缩).
+
+## Context Cleaning (context editing)
+
+> 📝 **TODO**: translate from [## 上下文清理（context editing）](#上下文清理context-editing).
+
+### The shape is copied from Anthropic's `clear_tool_uses_20250919`
+
+> 📝 **TODO**: translate from [### 形状抄的是 Anthropic 的 `clear_tool_uses_20250919`](#形状抄的是-anthropic-的-clear_tool_uses_20250919).
+
+### Four spots adapted for pi-go
+
+> 📝 **TODO**: translate from [### 四处按 pi-go 的情况改了](#四处按-pi-go-的情况改了).
+
+### Three spots that were already pi-go-shaped
+
+> 📝 **TODO**: translate from [### 三处原本就按 pi-go 的情况改了](#三处原本就按-pi-go-的情况改了).
+
+### Two non-obvious but important properties
+
+> 📝 **TODO**: translate from [### 两条不显然但要紧的性质](#两条不显然但要紧的性质).
+
+### The task list gets pinned here
+
+> 📝 **TODO**: translate from [### 任务清单在这里被钉住](#任务清单在这里被钉住).
+
+### What it does not solve
+
+> 📝 **TODO**: translate from [### 它没有解决什么](#它没有解决什么).
+
+## Compaction (`/compact`)
+
+> 📝 **TODO**: translate from [## 压缩（`/compact`）](#压缩compact).
+
+### Why it is not automatic
+
+> 📝 **TODO**: translate from [### 为什么它不自动](#为什么它不自动).
+
+### What it guarantees
+
+> 📝 **TODO**: translate from [### 它保证什么](#它保证什么).
+
+### The full record is not lost
+
+> 📝 **TODO**: translate from [### 完整记录不会丢](#完整记录不会丢).
+
+### When it will refuse
+
+> 📝 **TODO**: translate from [### 什么时候它会拒绝](#什么时候它会拒绝).
+
+### Browser
+
+> 📝 **TODO**: translate from [### 浏览器](#浏览器).
+
+## Retry
+
+> 📝 **TODO**: translate from [## 重试](#重试).
+
+## Project Structure
+
+> 📝 **TODO**: translate from [## 项目结构](#项目结构).
+
+## Things Deliberately Not Done
+
+> 📝 **TODO**: translate from [## 有意不做的东西](#有意不做的东西).
+
+## Development
+
+> 📝 **TODO**: translate from [## 开发](#开发).
+
+### The window values in the catalog are measured, not copied once
+
+> 📝 **TODO**: translate from [### 目录里的窗口值是实测过的，不是抄一次就算](#目录里的窗口值是实测过的不是抄一次就算).
