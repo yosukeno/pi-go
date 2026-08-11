@@ -2162,72 +2162,281 @@ Measured shape (`-max-turns 4 -max-runs 3`, a file-writing task needing 6+ turns
 
 ## Context Cleaning (context editing)
 
-> 📝 **TODO**: translate from [## 上下文清理（context editing）](#上下文清理context-editing).
+**On by default.** When the prompt exceeds **four-fifths** of the model window, the oldest tool results are replaced in **the copy sent to the model** with a placeholder line:
+
+```
+· read {"path":"internal/store/store.go"}
+  1840 lines (+0 -0)
+…
+… context edit: dropped 6 old tool result(s), ~31,200 tokens (prompt was ~104,900)
+```
+
+What the model sees is:
+
+```
+[1840 lines / 58KB of read output removed to fit the context window. Call the tool again if you still need it.]
+```
+
+It solves a death that is certain to happen: history only grows, every turn resends it in full, after reading dozens of large files the prompt crosses the window and the provider returns 400 — and 400 is not on `llm/retry.go`'s retry whitelist, so the run ends on the spot. Worse, the history does not get smaller as a result, **the very next message in the same session fails on the first call, permanently stuck, only a new session can recover**.
+
+**And because the threshold is a guess, there is one more fallback: after the provider refuses, force-clean once and retry.** The number the threshold compares against is half measured and half estimated, so it can be crossed without anyone noticing; the provider's refusal is not a guess, it is entitled to trigger a cleaning directly. This one layer is what separates "this turn failed" from "this session is dead."
+
+The forced one overrides three regular policies, all for the same reason — their purpose is to avoid paying for "a cleaning that may not be needed," and the refusal has already answered that question:
+
+| What's overridden | Why |
+|---|---|
+| Trigger line | The number it compares against is half estimated; the provider's count is not |
+| `clear_at_least` | It exists to not buy one cache miss to save a little. Here the alternative is not a cache miss, it's a dead session |
+| Retention window shrinks to 1 | **Not 0**: clearing the one result the model was about to reason on amounts to asking the retry to answer a question whose evidence was just taken away |
+
+**`ExcludeTools` is not overridden.** That is the caller explicitly saying "never clean this," and a mechanism that drops an explicit instruction the moment it's inconvenient is worse than one that honestly reports it cannot help. If it happens that this very exclusion is what makes the prompt not fit, then the provider's error is returned as-is.
+
+**This pass is bounded, and the bound comes from an existing property**: the cleared set only grows, so on the second overflow within the same run forced cleaning finds nothing new to clear, `ok` is false, and the error is returned directly — no extra counter needed, no spinning.
+
+**It has no event notification, by design.** Emitting another `turn_start` for the same turn would be wrong — `web/hub.go` is exactly where this turn's message id is minted, and the contract reads "one turn produces one assistant message" — and the right landing point would be a new event type, which means changing the wire contract rather than this file. In the end it is not silent either: what `editContext` reports on each pass is the **entire** frozen set, not just the newly added part, so the next turn's `turn_start` carries the grown number in both front ends.
+
+**Classification goes through `llm.APIError`, not string matching.** Non-2xx used to be flattened into a single string, so "prompt too long" and "wrong key" — both 400 on the same provider, needing opposite handling — could only be told apart by matching prose. Now the status code, the provider's own `type`, and the message are all retained.
+
+The check still **has to look at the message**, though, because the `type` the two vendors give does not separate them: on Kimi an overflow is `invalid_request_error`, and so is a missing parameter or a malformed body. So the phrase table was validated against the real endpoints, not copied from docs:
+
+```
+400 invalid_request_error
+"Invalid request: Your request exceeded model token limit: 262144 (requested: 400011)"
+```
+
+Only phrases that "can only mean this one thing" are collected. The cost of a misjudgment is asymmetric: treating a malformed request as an overflow would make pi-go work around a bug in the request by dropping context, which is worse than an honest error. For the same reason the check is **restricted to 4xx** — a 500 whose body happens to mention a token limit is a server fault, and dropping history to work around a fault is wrong.
+
+`-context-edit off` turns it off; a number sets an absolute threshold.
 
 ### The shape is copied from Anthropic's `clear_tool_uses_20250919`
 
-> 📝 **TODO**: translate from [### 形状抄的是 Anthropic 的 `clear_tool_uses_20250919`](#形状抄的是-anthropic-的-clear_tool_uses_20250919).
+Chosen because this is the only design with a public contract and default values, not some blog's speculation. What was lifted verbatim:
+
+| | |
+|---|---|
+| Trigger | cleaning starts only after the prompt exceeds the threshold |
+| Retention | the most recent 3 tool results are kept as-is (Anthropic's default) |
+| **Clear results, not calls** | the call of a read-class tool is kept with its arguments (their `clear_tool_inputs` defaults to `false`) — "the call happened, and against what" is the model's basis for deciding whether to redo it. **`write` / `edit` are the exception, see below** |
+| Placeholder | each cleared result is replaced with explanatory text, so the model knows something was taken away, not that it was never there |
+| Order | oldest cleared first |
+| `clear_at_least` | if the cleanable amount is too small, don't clean at all, see below |
+| Don't touch the transcript | they do it server-side, and the docs explicitly say the client retains the full unmodified history |
+
+**Why mechanical cleaning rather than an LLM summary**: the only evidence with a controlled experiment (Lindenbauer et al., *The Complexity Trap*, DL4C@NeurIPS'25, on SWE-bench Verified across five model configurations) finds **simple discarding of old observations halves cost while matching, occasionally slightly exceeding, LLM summaries on solve rate**. And it is much cheaper here: no extra model call, no summary that could be wrong but cannot be checked, behavior that can be pinned verbatim by unit tests.
 
 ### Four spots adapted for pi-go
 
-> 📝 **TODO**: translate from [### 四处按 pi-go 的情况改了](#四处按-pi-go-的情况改了).
+**`write` / `edit` arguments are cleared too; read-class tools' arguments are not.** This one was measured, not guessed.
+
+Running this project's own accumulated 100 sessions through the same accounting as `session.Compose`, the conclusion: the sessions that actually grew to a problem (7 at ≥50K) were **without exception 88%–99% tool output**, none were bloated by conversation text. But two of them were neither tool output nor conversation — they were **83% and 96% tool call arguments**, one being a `write` content of 42,328 estimated tokens. **And cleaning could clear 0% of them, because it only looks at results.**
+
+Anthropic's `clear_tool_inputs: false` reason is right — "the call happened, and against what" is the basis for deciding whether to redo. But that reason covers `read` / `ls` / `find` / `grep` / `bash`: their arguments **are** a description of the call (a path, a glob, a command line). It does not cover `write` and `edit`: there the large argument is not a description of the call, **it is the payload itself, and the one payload in the world most certainly also present elsewhere — the file is on disk**. Re-reading the file is both cheaper and more truthful than carrying a copy in context: that copy starts lying the moment anyone else edits that file.
+
+So what's cleared is the payload field, `path` stays (that is what Anthropic is really protecting), and the structure is untouched — `edits` is still an array, each element is still an object with two string fields, the length is still there, so "how many edits" remains answerable. The argument placeholder states only its own size (`[41KB cleared]`); the explanation is said once on the paired result placeholder.
+
+`edit`'s `oldText` is cleared too, on purpose: after a **successful** edit that text is by definition no longer in the file, it can never match again — keeping it amounts to specifically preserving the one string in this call that has already gone stale. A **failed** edit is the reverse, and its arguments are never touched: `clearable` skips error results anyway, and `oldText` happens to be the one thing the model needs when self-correcting.
+
+**The placeholder's last sentence varies by tool, because it is a suggestion the model will act on.** Anthropic's policy says the same line to every cleared result — `Call the tool again if you still need it.` That line is right when the only thing clearable is "a read," and pi-go has three classes of tools for which it is not:
+
+| What it costs to get back | Tool | That sentence |
+|---|---|---|
+| One call, from current state | `read` `ls` `find` `grep` | call again (the original) |
+| The effect is that file | `write` `edit` | the change is on disk, go read that file |
+| Re-runs what the command did | `bash` | only re-run if repeating is safe |
+| Costs a full sub-run | `subagent` | getting it back means delegating again |
+| Unclassified tool | — | only call again if a repeat call is safe |
+
+The `write` / `edit` line is the most concretely wrong: rerunning a `write` would overwrite the file with content the model no longer holds, rerunning an `edit` fails outright because the `oldText` is no longer in the file.
+
+The `bash` line was confirmed only after going through this project's own 100 transcripts. Across 75 real bash calls there were `git add -A && git commit -m ...`, `git cherry-pick <sha> && go test ./store/`, and a `cat > ~/.pi-go/providers.json << 'EOF` heredoc — **rerunning those is not "rereading," it is a second side effect.** So that sentence only states a fact (rerunning does it again) and leaves the judgment to the model: the command text is right there in the argument just above, untouched, and it is better placed than this text to judge whether this command can be repeated. This is the same rule as the two subagent fence paragraphs — state facts, give no instructions.
+
+The default for unclassified is **the cautious sentence rather than the encouraging one**, and the table lookup is explicit: `reRunFree` is exactly the zero value, and relying on the zero value would let "unregistered" silently equal "freely rerunnable," which is the one default that can turn "cleaning" into "an action." A test requires every tool in the default registry to be in the table, so adding a tool later forces this decision.
+
+Measured on real transcripts: of 13 sessions ≥20K, 12 cleared **not a single extra token** (they were read-dominated, the existing mechanism already sufficed), while the one argument-dominated session went from "could clear only 922 of a 26,217 history" to "cleared 12,212, of which 11,290 from arguments" — **43 percentage points more on the same session**.
 
 ### Three spots that were already pi-go-shaped
 
-> 📝 **TODO**: translate from [### 三处原本就按 pi-go 的情况改了](#三处原本就按-pi-go-的情况改了).
+**`auto` is four-fifths of the window, not a hardcoded 100,000, and not their half.** Anthropic's default is fixed at 100,000 because their model windows cluster around 200K — that number happens to be half. pi-go's catalog spans 262K to 1M; copying an absolute value would make a 1M model start cleaning at a tenth of its window, which is not the same policy. The threshold follows the model on switch (`/model` and the browser's switcher both recompute).
+
+The ratio is also not their half, **and this change has three reasons, the first two measured**:
+
+- **The number being compared against is itself high.** The estimate-to-measured ratio is 0.98 (ASCII) / 0.83 (Chinese), so "half the estimate" actually lands at 42%–49% of the window. Triggering at half means dropping things when more than half the window is genuinely empty.
+- **Cleaning is not free.** It rewrites part of the prompt, which invalidates the prefix cache: on Kimi a miss bills at about ten times a hit, on Zhipu about twice. Paying that to free up space no one has asked for yet is pure loss, and the model may go reread a file it could already see.
+- **The premise that held when "half" was chosen is gone.** Back then running out of context was permanent: the provider returned 400, the retry logic did not let 4xx through, and the history did not get smaller — every subsequent message in the same session would fail. Being early was buying insurance against a cliff. **That cliff is now gone**: a refusal triggers one forced cleaning and one retry (see "after the provider refuses" above), and the cost of being late dropped from "a session" to "one wasted call."
+
+**The remaining fifth is left for three things**, which is also why it's not nine-tenths: on Kimi the model's own output counts against the same quota (`prompt tokens + max_tokens exceeds the model specification`), so `MaxTokens` has to fit in this margin; the number being compared is half estimated and cannot be trusted to the ones digit; and cleaning happens **before** the call, while the turn it lets through will keep adding tool output to the history. Every model in the catalog has a margin 3–12× its `MaxTokens`, and a test watches this — because "a new model with a huge output cap and a tiny window" is exactly the thing that breaks this assumption.
+
+**Failed results are not cleared.** Anthropic makes no such distinction; pi-go does: self-correction from error text is this project's signature behavior, and the entire timeline UI is built on "connecting the fix to the failure it fixed." Error text is also short, so keeping it costs almost nothing.
+
+**`clear_at_least` has a default (8000 tokens); theirs defaults to none.** Their docs explain what it does: cleaning invalidates the cached prefix, so cleaning a tiny amount is just buying a cache miss for nothing. The cost is heavier here — both providers have implicit caching and **no API to edit an already-cached prefix**, and Kimi's miss bills at about ten times the hit (Zhipu's own docs say the discount is about half, so the two differ by 5×). The 8000 is a guess; it is the one parameter most worth calibrating against real session data.
 
 ### Two non-obvious but important properties
 
-> 📝 **TODO**: translate from [### 两条不显然但要紧的性质](#两条不显然但要紧的性质).
+**Once cleared, always cleared.** A result that has been cleared stays cleared in every subsequent turn, even after the prompt has dropped back below the threshold. Otherwise: this turn cleans → next turn is below threshold so the original is restored → the turn after that exceeds again and cleans — **the prompt prefix flips back and forth, paying one cache miss per cycle for nothing.** On Anthropic's side this is free (their docs describe the fate of cleared results as "once seen, frozen," and the replacement text is byte-identical every time); pi-go has to hold this set itself. The placeholder text is therefore a pure function of the original output's shape, containing no time and no "how many turns ago it was cleared."
+
+**The trigger decision is "measured baseline + estimated delta."** Both halves are necessary; missing either is the very death this mechanism prevents: the server-measured number always lags one turn, and that lagging turn is exactly the dangerous one — a batch of tool results can add a hundred thousand tokens between two measurements, and a threshold that reads only the last measurement would sail right past on the turn that fills the window. Conversely, estimating the entire history would throw away the one number that is not a guess: the measured value already includes the system prompt, tool schemas, and wire framing, and `llm.EstimateTokens` models none of them. So it's measured baseline plus estimated delta — the same cut, and the same reason, as Codex's `body_after_prefix`.
 
 ### The task list gets pinned here
 
-> 📝 **TODO**: translate from [### 任务清单在这里被钉住](#任务清单在这里被钉住).
+A `todo` result is state, not an event, so the rule is the reverse of other tools: **superseded old lists are cleared unconditionally** (no threshold consulted, they are copies of stale state), and **the latest one is never cleared**, even if it is the oldest thing in the entire history, even if the retention window would have come to it. It is the one record of "what to do now" that must survive into the next context window. It does not occupy a slot in the retention window either — those three slots are for the working set.
 
 ### What it does not solve
 
-> 📝 **TODO**: translate from [### 它没有解决什么](#它没有解决什么).
+**This is not compaction.** If the history is bloated by conversation text rather than tool output, there is nothing to clean. The real dividing line is here: cleaning handles "tool output is large," summary compaction handles "the conversation is long." Which one is your actual load, the Context Composition section of `-analyze-session` will tell you — that is exactly why it exists. Compaction is the next section, and **it happens only when you ask.**
+
+**The model may not reread.** The placeholder can only give the model the information it needs to recover; it cannot make it use it. The model may also continue to cite, from memory, content that is no longer there. This is the same class of uncheckable as a summary "may be wrong," just a different shape.
 
 ## Compaction (`/compact`)
 
-> 📝 **TODO**: translate from [## 压缩（`/compact`）](#压缩compact).
+Replaces the entire conversation with a summary. **Happens only when you type `/compact`, never on its own.**
+
+```
+❯ /compact
+compacted: 47 messages → 1, about 82400 → 1210 tokens (freed ~81190); the summary cost 79300 in / 640 out.
+the full conversation is still in ~/.pi-go/sessions/20260810T072148Z-f5e350b2.jsonl as an abandoned branch.
+```
 
 ### Why it is not automatic
 
-> 📝 **TODO**: translate from [### 为什么它不自动](#为什么它不自动).
+Cleaning is reversible — the output it drops can be fetched back, and the placeholder tells the model how. A summary is not: it is a lossy rewrite, produced by a model that may get it wrong, with no test that can catch that kind of wrong.
+
+So the trigger condition is "a human开口s and asks." This is not dressing up a limitation as a principle; it is the specific condition that makes this loss acceptable — **the person making this decision is the one who knows what they still need.**
+
+Two bodies of evidence back "not automatic":
+
+- Measuring this project's own 100 sessions: the 7 that reached 50K estimated tokens were **without exception 88%–99% tool output**, and mechanical cleaning can free 90%–97% of that. What summaries exist to address is "conversation text bloating," a shape that **never once appeared** in the real data.
+- The only controlled study on "policy compliance across the compaction boundary" (arXiv [2606.22528](https://arxiv.org/abs/2606.22528), 7 models, 1,323 episodes) shows: constraints declared before the boundary and then dropped by the summary push the violation rate from 0% to 30%, and **Chinese scenarios are 42 percentage points worse** — and this project's two built-in providers are both on that panel.
+
+Trading a problem that hasn't happened for a measured risk should not be done automatically. When you ask for it, that's your tradeoff.
+
+*(The paper content is a paraphrase of the abstract, rewritten as required by the license.)*
 
 ### What it guarantees
 
-> 📝 **TODO**: translate from [### 它保证什么](#它保证什么).
+**The opening request is preserved verbatim.** This is the one thing in the entire design that comes directly from measurement: the study above compared various compaction strategies, and **only "keep the earliest turn" held the violation rate at 0%**, because the constraints are written in that turn. It is nearly free here — in measured large sessions user text is 0.4%–0.9%.
+
+**The summarizer carries no tools, and the history is flattened into one user message.** These are the same decision. Anthropic recorded that a model asked to summarize with tools available will sometimes call a tool instead of answering, producing a `content: null` compaction block, and their answer was to write "do not call any tools" in the prompt. pi-go does compaction client-side, so it has an option they don't — **don't provide tools, and don't send any `tool_use` block, so calling a tool is not discouraged but absent.** Flattening is the precondition that makes this work: a request carrying `tool_use` blocks without the tool declarations is rejected outright by some OpenAI-compatible endpoints.
+
+**The summarizer is always the agent's own model, never a cheaper one.** The temptation is real, and the mechanism is right there (`subagent_model` is at hand). But in that study **violations track the model that wrote the summary, not the one that executes**: an agent reading a weak model's summary has a 53% violation rate, while reading its own summary is 0%. The summary is not a sub-task worth comparison-shopping; it is the one remaining record of those instructions.
+
+**The injection boundary is explicit.** Tool output goes into the summarizer, and tool output here is the contents of files in the workspace — a file can carry a line aimed at "whoever reads it." So the content to be summarized is wrapped entirely in a `<transcript>` element, and the system prompt explicitly calls it data. pi-go also starts from a slightly better place than implementations that summarize raw history directly: cleaning has already turned the oldest tool results into placeholders.
+
+**Any failure leaves the conversation untouched.** Empty summary, summary larger than the original, a run in progress, the conversation changing during summarization — all four cases are "preserve as-is and explain why," costing at most one model call.
 
 ### The full record is not lost
 
-> 📝 **TODO**: translate from [### 完整记录不会丢](#完整记录不会丢).
+The session file is an append-only tree, and `/compact` takes the same path as "rewind": `Fork("")` **abandons** the current branch and starts a new chain; the original records all stay in the file, just unreachable. So `-resume` replays the compacted history, while the full original is readable at any time. **The transcript is never edited.**
+
+**But the cost of the abandoned branch does not vanish with it.** The cumulative usage counts **every** stats record in the file, not just the ones on the current branch — the provider has already been billed for those tokens, and which branch is live is irrelevant to that fact. This holds for rewind too, and it has to: `-token-budget` and `-cost-budget` are ceilings, and a ceiling that forgets what's been spent every time the conversation is reorganized is not a ceiling. It also keeps this in agreement with `-analyze-session` (which has always read all records linearly).
 
 ### When it will refuse
 
-> 📝 **TODO**: translate from [### 什么时候它会拒绝](#什么时候它会拒绝).
+| Case | Reason |
+|---|---|
+| The conversation has one or zero messages | nothing to compress, and won't burn a call for it |
+| The summary is not smaller than the original | usually the opening message is very long (e.g., a document was pasted in) — it is deliberately pinned, so it cannot be compressed. Compaction making the prompt larger is paying to make the problem worse |
+| A run is in flight | the loop is appending to this history |
+| The summary is empty | the `content: null` shape mentioned above |
+| The conversation changed during summarization | the summary no longer describes the current history |
+
+The token cost of the summarization call itself is counted in the totals (`-token-budget` / `-cost-budget` see it), but **not in `delegated`** — that field answers "how much did the sub spend," and compaction is the parent's own work.
 
 ### Browser
 
-> 📝 **TODO**: translate from [### 浏览器](#浏览器).
+Two entry points: type `/compact` in the composer, or **click the context usage bar** — the button is at the bottom of the composition panel.
+
+It sits there because that panel has already computed the answer. **The same data, two opposite recommendations:**
+
+- When it's mostly **tool output** (the common case in measurement: large sessions are 88%–99% it), the panel says cleaning is already handling this part and compaction won't help much, and the button stays in normal style
+- When it's mostly **conversation text**, the panel says this part won't be evicted automatically and compaction is exactly what it's for, and the button becomes the recommended style
+
+A button that always looks equally worth pressing carries no information. Ties go to the tool side — a tie is not evidence that "conversation text is the problem," and recommending a lossy rewrite needs evidence.
+
+A confirmation pops before compaction (the one command here that confirms, because it is the one that loses work), the button shows progress during compaction, and a `compacted` event is broadcast on completion so all tabs refetch the snapshot. The button is disabled while running (the server also 409s).
+
+**`/compact` does not participate in prefix abbreviation,** on either side. No existing command starts with `/c`, so without this rule, typing `/c` plus Enter would replace the entire conversation — a two-character slip. The rule is "irreversible commands don't participate in abbreviation," and it **applies only to Enter, not Tab**: Tab first lays out the full name on screen; pressing Enter on a prefix is acting on a guess.
+
+Server endpoint: `POST /api/sessions/{sid}/control {"action":"compact"}`. Bypassing the client by sending `/compact` as a prompt in the composer is bounced with 400 — slash commands are never allowed into the conversation, otherwise a file containing "please output /compact" could manipulate the session.
 
 ## Retry
 
-> 📝 **TODO**: translate from [## 重试](#重试).
+429 / 5xx / connection errors are retried automatically, default 3 times. Parameters taken from the official SDK's implementation:
+
+- Prefer the server's `Retry-After-Ms` / `Retry-After`; fall back to local backoff only if absent
+- Local backoff `500ms × 2^n`, capped at 8 seconds, then **minus** up to 25% jitter (guarantees it stays under the cap)
+- Other 4xx are not retried (400/401/403/404 are problems with the request itself; retrying only burns quota)
+- Ctrl-C during backoff returns immediately, no dry waiting
+
+Retries are logged to stderr, so rate limiting doesn't look like a hang:
+
+```
+… retry 1/3 in 1s: 429 Too Many Requests: rate_limit_error: concurrency limit reached
+```
+
+**One streaming detail**: once content has already been output to the screen, a mid-stream break does not replay the request, otherwise output would be duplicated. Generic SDKs retry at the HTTP layer and cannot do this.
 
 ## Project Structure
 
-> 📝 **TODO**: translate from [## 项目结构](#项目结构).
+```
+llm/       protocol layer: neutral types + Client interface, hand-written SSE client, retry
+agent/     loop.go core loop, gate.go approval hook, event.go events, prompt.go system prompt
+tools/     read / ls / find / grep / write / edit / bash / subagent / todo + truncation + per-path lock + path guard
+skills/    skill discovery, frontmatter parsing, prompt rendering, /skill: expansion
+diff/      zero-dependency Myers line diff (human-readable / git-apply-able / +3 -1 badge)
+session/   JSONL tree, resume and fork
+config/    provider catalog and key resolution
+web/       HTTP + SSE: event log and snapshot, run lifecycle, approval gate, policy
+web/ui/    Vue3 + TS front end, build output embedded into the binary
+tui/       terminal front end: event renderer, dock status bar, line editor (stty raw mode, history, Tab completion), markdown streaming filter, ANSI handling
+main.go    CLI: flags, two modes, REPL orchestration, session and model assembly
+help.go    -h and /help bilingual help (command tables live in tui, same source as completion)
+```
+
+`agent.Run()` returns `<-chan Event`; the renderer is just a consumer of events. `web/` is the second consumer, and its existence did not change the shape of the loop — the only thing that touched the loop is that tool return values gained a structured channel and an optional approval hook.
 
 ## Things Deliberately Not Done
 
-> 📝 **TODO**: translate from [## 有意不做的东西](#有意不做的东西).
+MCP, plan mode, TUI, **automatic** summary compaction.
+
+(Subagents and todos used to be on this list; both have been done. **Context cleaning is also done**, but it is not compaction — see the dividing line between the two below. **Summary compaction now exists as `/compact`**, but only happens when you ask, never on its own — see "Compaction" for why.)
+
+Known gaps (`docs/harness-design.md` §13 is the design-side version of the same list, with a "why not yet" on each):
+- Only `bash` has incremental output; the terminal does not stream during parallel batches (two commands interleaved into the same terminal is unreadable); the web UI is not bound by this
+- Diff colors only additions/deletions, no syntax highlighting (two layers of color fight each other)
+- Interactive mode has line editing, history recall, and Tab completion, but no multi-line input
+- **There is no automatic summary compaction**, only manual `/compact` (see "Compaction"). So a session bloated by conversation text will still hit the wall when you don't actively compact — at that point forced cleaning will honestly report it cannot help and return the provider's error as-is
+- Terminal mode has no approval gate (all tools execute directly); policy commands like `/auto` are meaningful only under `-web`
+- Terminal mode also cannot interject: the REPL is blocked while running, you can't type at all. Interject is only under `-web`
+- Sessions persist per turn (a turn's assistant message and its tool results are written together to count), so a killed process loses at most the in-flight turn; completed turns are all there
+- `-p` exits 1 on a failed turn; interactive mode prints the error and the session continues (an intentional asymmetry)
+
+One intentional difference from pi: `read` / `write` / `edit` run in parallel (writes have a per-path lock), **`bash` is serial**. Commands like `go build` are already internally parallel, and parallelizing further only contends for the build cache lock; two commands writing the same output file would corrupt it undetectably; and under the gate, N parallel bash calls would pop N cards at once.
 
 ## Development
 
-> 📝 **TODO**: translate from [## 开发](#开发).
+```bash
+# Go side
+go build ./...
+go vet ./...
+go test -race ./...   # 502 cases. Parallel execution, event fan-out, and the gate are concurrent code; not running -race means not validating
+gofmt -l .
+
+# Front end
+cd web/ui
+npm ci
+npm test              # 141 cases (12 files), including a real SSE recording replay
+npm run check         # vue-tsc type check
+npm run build         # output into dist/, embedded into the binary
+```
+
+The Go side has only two third-party dependencies (`creack/pty`, `nhooyr.io/websocket`), both serving only the browser terminal; everything else is stdlib. **`web/ui/dist` is embedded, so it is checked into the repo**: after editing the front end, remember to rebuild, otherwise the binary still carries the old page.
 
 ### The window values in the catalog are measured, not copied once
 
-> 📝 **TODO**: translate from [### 目录里的窗口值是实测过的，不是抄一次就算](#目录里的窗口值是实测过的不是抄一次就算).
+`ContextWindow` is not just for display: `-context-edit auto` takes four-fifths of it, and the browser's context usage bar turns yellow/red in proportion to it. A window reported too small would make pi-go **clean too early** (paying for cache misses and rereads for nothing) and suggest you start a new session while more than half the window is still free. So these numbers are validated against the endpoints.
+
+glm-5.2 used to be listed in the catalog as 200,000, **off by five times**. The vendor's own docs and model card both say 1M context, and probing the endpoint pi-go actually uses (the coding plan, not the general API) once: **a 400,013-token prompt was accepted and billed, with `finish_reason` of `stop`** — so it is definitely more than 200,000.
+
+`MaxTokens` stays at 16384 unchanged: that is the **output** cap, not the window. The model allows 131,072, but a coding agent producing that much in one turn has gone off the rails; and on kimi the output cap and the prompt share one quota ("prompt tokens + max_tokens exceeds the model specification").
+
+The same probe **confirmed kimi's numbers as exactly correct**: `kimi-for-coding` replied to the same body with "Your request exceeded model token limit: 262144." One provider's catalog value is right, the other's off by five times — which is why this kind of constant should be re-measured rather than trusted.
