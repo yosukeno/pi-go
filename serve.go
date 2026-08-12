@@ -32,6 +32,8 @@ type webOptions struct {
 	costBudget          float64
 	timeBudget          time.Duration
 	gateTimeout         time.Duration
+	// panels are the raw -web-panel values ("name=url"), parsed in serveWeb.
+	panels []string
 	// contextEdit is the raw -context-edit spec, resolved per session by the Manager:
 	// "auto" is a fraction of the model's window, and the browser can switch models
 	// mid-session.
@@ -108,6 +110,13 @@ func serveWeb(o webOptions) error {
 		DevProxy: o.dev,
 		Logger:   log.New(os.Stderr, "pi-go: ", 0),
 	}
+	for _, raw := range o.panels {
+		name, u, ok := strings.Cut(raw, "=")
+		if !ok {
+			return fmt.Errorf("-web-panel %q: want name=url", raw)
+		}
+		opts.Panels = append(opts.Panels, web.Panel{Name: name, URL: u})
+	}
 	if o.dev != "" {
 		// The vite dev server serves the page, so its origin has to be accepted.
 		opts.AllowedOrigins = []string{strings.TrimSuffix(o.dev, "/")}
@@ -124,6 +133,9 @@ func serveWeb(o webOptions) error {
 	if len(skillList) > 0 {
 		fmt.Printf("%s  %d skill(s): %s%s\n", tui.Dim, len(skillList),
 			strings.Join(skills.Names(skillList), ", "), tui.Reset)
+	}
+	for _, p := range opts.Panels {
+		fmt.Printf("%s  panel %q → %s%s\n", tui.Dim, p.Name, p.URL, tui.Reset)
 	}
 	url := fmt.Sprintf("http://%s/?token=%s", displayAddr(o.listen), token)
 	fmt.Printf("  %s\n", tui.Link(url, url))

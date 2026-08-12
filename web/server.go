@@ -32,9 +32,39 @@ type ServerOptions struct {
 	Token string
 	// DevProxy points the non-API routes at a vite dev server during development.
 	DevProxy string
+	// Panels are external web applications shown as dock sheets (-web-panel).
+	// Order is display order.
+	Panels []Panel
 	// AllowedOrigins are extra browser origins accepted besides same-origin.
 	AllowedOrigins []string
 	Logger         *log.Logger
+}
+
+// Panel is an external web application the browser UI can open as a dock sheet.
+// The sheet's iframe loads /panels/<name>/, which this server reverse-proxies
+// to URL: same origin, so the Origin check covers it and no CORS is opened.
+//
+// A panel runs in the page's origin — register only backends you trust with the
+// token that page already holds, the same bar -skill clears by rewriting the
+// system prompt. Panel content is served without the token for the same reason
+// the page and its assets are: it is content, not operations. A backend with
+// mutations must do its own auth.
+type Panel struct {
+	Name string // shown in the sheet rail; no "/" or "="
+	URL  string // absolute http(s) backend
+}
+
+// validatePanel rejects the two shapes that would break routing: a name that
+// collides with the URL grammar, and a URL we cannot proxy to.
+func validatePanel(p Panel) error {
+	if p.Name == "" || strings.ContainsAny(p.Name, "/= \t") {
+		return fmt.Errorf("invalid panel name %q: no spaces, slashes or '='", p.Name)
+	}
+	u, err := url.Parse(p.URL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("invalid panel url %q: want absolute http(s)", p.URL)
+	}
+	return nil
 }
 
 type Server struct {
@@ -42,6 +72,8 @@ type Server struct {
 	opts  ServerOptions
 	mux   *http.ServeMux
 	proxy http.Handler
+	// panelProxies is keyed by panel name; built once at startup.
+	panelProxies map[string]*httputil.ReverseProxy
 }
 
 func NewServer(mgr *Manager, opts ServerOptions) (*Server, error) {
@@ -53,13 +85,47 @@ func NewServer(mgr *Manager, opts ServerOptions) (*Server, error) {
 		}
 		s.proxy = httputil.NewSingleHostReverseProxy(u)
 	}
+	s.panelProxies = map[string]*httputil.ReverseProxy{}
+	for _, p := range opts.Panels {
+		if err := validatePanel(p); err != nil {
+			return nil, err
+		}
+		if _, dup := s.panelProxies[p.Name]; dup {
+			return nil, fmt.Errorf("duplicate panel name %q", p.Name)
+		}
+		s.panelProxies[p.Name] = newPanelProxy(p)
+	}
 	s.routes()
 	return s, nil
+}
+
+// newPanelProxy strips the /panels/<name> prefix and forwards to the backend,
+// so the app inside can use ordinary absolute-relative links and fetch calls.
+func newPanelProxy(p Panel) *httputil.ReverseProxy {
+	target, _ := url.Parse(p.URL) // validated by validatePanel
+	prefix := "/panels/" + p.Name
+	return &httputil.ReverseProxy{
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			pr.SetXForwarded()
+			pr.Out.URL.Path = strings.TrimPrefix(pr.In.URL.Path, prefix)
+			if pr.Out.URL.Path == "" {
+				pr.Out.URL.Path = "/"
+			}
+			pr.SetURL(target) // joins target's base path with Out's path
+			pr.Out.Host = target.Host
+		},
+	}
 }
 
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/models", s.handleModels)
 	s.mux.HandleFunc("GET /api/skills", s.handleSkills)
+	s.mux.HandleFunc("GET /api/panels", s.handlePanels)
+	// Panel proxy: content, not operations, so like the page itself it is not
+	// token-gated (see the Panel doc). Bare /panels/<name> redirects to the
+	// trailing slash so relative links inside resolve under the prefix.
+	s.mux.Handle("/panels/{name}/", http.HandlerFunc(s.handlePanel))
+	s.mux.Handle("/panels/{name}", http.HandlerFunc(s.handlePanelRedirect))
 	s.mux.HandleFunc("GET /api/sessions", s.handleListSessions)
 	s.mux.HandleFunc("POST /api/sessions", s.handleCreateSession)
 	s.mux.HandleFunc("GET /api/sessions/{sid}", s.handleGetSession)
@@ -211,6 +277,44 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		out = append(out, e)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": out, "default": config.DefaultModel()})
+}
+
+// handlePanels lists the external panels registered with -web-panel. The UI
+// needs it once at boot to know which sheet buttons to show; the backend URL
+// is deliberately withheld — the iframe only ever talks to /panels/<name>/,
+// so the internal topology stays the server's business.
+func (s *Server) handlePanels(w http.ResponseWriter, r *http.Request) {
+	type panel struct {
+		Name string `json:"name"`
+		Path string `json:"path"`
+	}
+	out := make([]panel, 0, len(s.opts.Panels))
+	for _, p := range s.opts.Panels {
+		out = append(out, panel{Name: p.Name, Path: "/panels/" + p.Name + "/"})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"panels": out})
+}
+
+func (s *Server) handlePanel(w http.ResponseWriter, r *http.Request) {
+	proxy, ok := s.panelProxies[r.PathValue("name")]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	proxy.ServeHTTP(w, r)
+}
+
+func (s *Server) handlePanelRedirect(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if _, ok := s.panelProxies[name]; !ok {
+		http.NotFound(w, r)
+		return
+	}
+	target := "/panels/" + name + "/"
+	if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
+	}
+	http.Redirect(w, r, target, http.StatusMovedPermanently)
 }
 
 // handleSkills lists the skills in effect. The set is server-wide and fixed at

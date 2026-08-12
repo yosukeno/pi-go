@@ -455,6 +455,14 @@ export interface SkillInfo {
   manual_only?: boolean;
 }
 
+// PanelInfo is an external web app registered with -web-panel. path is the
+// same-origin prefix the iframe loads (/panels/<name>/); the backend URL is
+// never exposed to the page.
+export interface PanelInfo {
+  name: string;
+  path: string;
+}
+
 export interface ModelInfo {
   id: string;
   provider: string;

@@ -158,6 +158,11 @@ func main() {
 	flag.Var(&skillPaths, "skill",
 		"Load a skill from this `path` (file or directory). Repeatable."+
 			"\n从指定路径加载 skill（文件或目录），可重复")
+	// -web-panel is repeatable too: name=url per panel.
+	var panelFlags repeatedFlag
+	flag.Var(&panelFlags, "web-panel",
+		"Show an external web app as a dock sheet: `name=url`. Repeatable. The app is reverse-proxied at /panels/name/."+
+			"\n把一个外部 web 应用挂进 dock 作为 sheet 显示：name=url，可重复；应用被反代到 /panels/name/")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -243,6 +248,7 @@ func main() {
 			contextEdit: *contextEdit,
 			skills:      skillOpts,
 			memory:      memOpts,
+			panels:      panelFlags,
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "pi-go: %v\n", err)
 			os.Exit(1)

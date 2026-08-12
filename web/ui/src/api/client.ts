@@ -3,6 +3,7 @@ import type {
   FileIndexResponse,
   FilesResponse,
   ModelInfo,
+  PanelInfo,
   PolicyMode,
   PolicyState,
   SessionInfo,
@@ -59,6 +60,10 @@ export const api = {
   // Server-wide and fixed at startup, so this is fetched once on mount and never
   // refreshed.
   skills: () => request<{ skills: SkillInfo[] }>("GET", "/api/skills"),
+
+  // External panels registered with -web-panel; same once-at-boot fetch rule
+  // as skills.
+  panels: () => request<{ panels: PanelInfo[] }>("GET", "/api/panels"),
 
   sessions: () => request<{ sessions: SessionInfo[]; cwd: string }>("GET", "/api/sessions"),
 

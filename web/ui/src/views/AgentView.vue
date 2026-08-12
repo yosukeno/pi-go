@@ -28,12 +28,12 @@ import SkillBlock from "@/components/SkillBlock.vue";
 import WorkspacePicker from "@/components/WorkspacePicker.vue";
 import Logo from "@/components/Logo.vue";
 import { Icon } from "@iconify/vue";
-import { baseName, fileIcon, messageIcon, sessionIcon, terminalIcon } from "@/components/fileIcons";
+import { baseName, fileIcon, messageIcon, sessionIcon } from "@/components/fileIcons";
 import { useAgentStream } from "@/agent/useAgentStream";
 import { buildTimeline, formatDuration, parseSkillBlock } from "@/agent/timeline";
 import { invalidateTree } from "@/components/fileTreeStore";
 import { api, token } from "@/api/client";
-import type { ModelInfo, PolicyMode, SessionInfo, SkillInfo } from "@/api/types";
+import type { ModelInfo, PanelInfo, PolicyMode, SessionInfo, SkillInfo } from "@/api/types";
 import { LOCALE_LABELS, SUPPORTED_LOCALES, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 
@@ -104,13 +104,24 @@ async function collapseSidebar() {
   );
 }
 
-// The workspace file panel on the right follows the same persistence rule.
-const filesOpen = ref(localStorage.getItem("pi-go:files-open") === "1");
-watch(filesOpen, (v) => localStorage.setItem("pi-go:files-open", v ? "1" : "0"));
+// The right dock is a sheet container (files / shell / external panels), one
+// sheet at a time; the active sheet persists. Legacy files/shell booleans
+// migrate into it once.
+const SHEET_KEY = "pi-go:active-sheet";
+const legacySheet = localStorage.getItem("pi-go:files-open") === "1"
+  ? "files"
+  : localStorage.getItem("pi-go:shell-open") === "1"
+    ? "shell"
+    : null;
+const initialSheet = localStorage.getItem(SHEET_KEY) ?? legacySheet;
+const activeSheet = ref<string | null>(initialSheet || null);
+watch(activeSheet, (v) => (v ? localStorage.setItem(SHEET_KEY, v) : localStorage.removeItem(SHEET_KEY)));
+localStorage.removeItem("pi-go:files-open");
+localStorage.removeItem("pi-go:shell-open");
 
-// The shell panel shares the dock with the files panel (see DockArea).
-const shellOpen = ref(localStorage.getItem("pi-go:shell-open") === "1");
-watch(shellOpen, (v) => localStorage.setItem("pi-go:shell-open", v ? "1" : "0"));
+// External panels registered with -web-panel, fetched once at boot (the set is
+// fixed for the life of the server, like skills).
+const panels = ref<PanelInfo[]>([]);
 
 // The panel's dock side: right (the default) or bottom, persisted the same way.
 // The toggle itself lives in the panel's header, Chrome DevTools style.
@@ -161,7 +172,7 @@ onMounted(async () => {
   if (!token) {
     showFlash(t("agentView.flash.noToken"), "error", true);
   }
-  await Promise.all([loadSessions(), loadModels(), loadSkills()]);
+  await Promise.all([loadSessions(), loadModels(), loadSkills(), loadPanels()]);
   if (sessions.value.length > 0) open(sessions.value[0].id);
   else await createSession();
 });
@@ -204,6 +215,14 @@ async function loadSkills() {
     skills.value = (await api.skills()).skills;
   } catch {
     // Non-fatal: /skill: completion just has nothing to offer.
+  }
+}
+
+async function loadPanels() {
+  try {
+    panels.value = (await api.panels()).panels;
+  } catch {
+    // Non-fatal: the rail just shows no external sheets.
   }
 }
 
@@ -977,25 +996,6 @@ function rewindStatusLabel(status: string) {
              window, not the session list, and stays visible when the
              sidebar is collapsed. -->
         <span class="cwd" :title="cwd">{{ cwd }}</span>
-        <div class="top-actions">
-        <button class="files-btn" :class="{ on: filesOpen }" :title="t('agentView.topbar.files')" @click="filesOpen = !filesOpen">
-          <!-- Workspace bench icon (参考资料/ts-work-space.svg). It ships its
-               own two fills, so it does not follow the button's state colors. -->
-          <svg width="15" height="15" viewBox="0 0 1024 1024" aria-hidden="true">
-            <path
-              d="M0 768a109.714286 109.714286 0 0 0 109.714286 109.714286h209.188571l-18.285714 73.142857H182.857143a36.571429 36.571429 0 0 0 0 73.142857h658.285714a36.571429 36.571429 0 0 0 0-73.142857h-136.045714l-18.285714-73.142857H914.285714a109.714286 109.714286 0 0 0 109.714286-109.714286V402.285714a36.571429 36.571429 0 0 0-73.142857 0v365.714286a36.571429 36.571429 0 0 1-36.571429 36.571429H109.714286a36.571429 36.571429 0 0 1-36.571429-36.571429V109.714286a36.571429 36.571429 0 0 1 36.571429-36.571429h804.571428a36.571429 36.571429 0 0 1 36.571429 36.571429v73.142857a36.571429 36.571429 0 0 0 73.142857 0V109.714286a109.714286 109.714286 0 0 0-109.714286-109.714286H109.714286a109.714286 109.714286 0 0 0-109.714286 109.714286z m611.474286 109.714286l18.285714 73.142857H375.954286l18.285714-73.142857z"
-              fill="#211B13"
-            />
-            <path
-              d="M182.857143 585.142857a36.571429 36.571429 0 0 0 0 73.142857h658.285714a36.571429 36.571429 0 0 0 0-73.142857z"
-              fill="#FFB243"
-            />
-          </svg>
-        </button>
-          <button class="files-btn" :class="{ on: shellOpen }" title="Shell" @click="shellOpen = !shellOpen">
-            <Icon :icon="terminalIcon" width="15" />
-          </button>
-        </div>
       </header>
 
       <div v-if="flash" class="notice" :class="{ bad: flash.kind === 'error' }">{{ flash.text }}</div>
@@ -1192,18 +1192,18 @@ function rewindStatusLabel(status: string) {
       </div>
     </main>
 
-    <!-- The dock mirrors the session sidebar, docked on the right by default
-         or along the bottom (Chrome DevTools style); it hosts the workspace
-         files panel and the session shell side by side. -->
+    <!-- The dock is a sheet container docked on the right by default or along
+         the bottom (Chrome DevTools style): workspace files, the session
+         shell, and each registered -web-panel are sheets switched by the
+         always-visible rail. -->
     <DockArea
       v-model:layout="panelLayout"
-      :files-open="filesOpen"
-      :shell-open="shellOpen"
+      :active="activeSheet"
+      :panels="panels"
       :items="timeline"
       :workspace="currentWorkspace"
       :session-id="current"
-      @close-files="filesOpen = false"
-      @close-shell="shellOpen = false"
+      @update:active="activeSheet = $event"
     />
 
     <WorkspacePicker v-if="pickerOpen" :cwd="cwd" @create="onCreateWorkspace" @close="pickerOpen = false" />
@@ -1656,40 +1656,6 @@ function rewindStatusLabel(status: string) {
   padding: 10px 16px;
   border-bottom: 1px solid var(--el-border-color-lighter);
   font-size: 12px;
-}
-
-.top-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  /* The cwd took over the left; the actions keep the right. */
-  margin-left: auto;
-}
-
-.files-btn {
-  display: inline-flex;
-  align-items: center;
-  flex: none;
-  border: 0;
-  background: transparent;
-  padding: 4px 6px;
-  border-radius: 4px;
-  font-size: 15px;
-  color: var(--el-text-color-secondary);
-  cursor: pointer;
-
-  &:hover {
-    background: var(--el-fill-color);
-  }
-
-  &.on {
-    color: var(--el-text-color-primary);
-    background: var(--el-fill-color);
-  }
-
-  svg {
-    display: block;
-  }
 }
 
 .notice {

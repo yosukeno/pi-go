@@ -156,6 +156,7 @@ echo "解释 Go 的 defer 执行时机" | pi-go
 | `-gate-timeout <dur>` | 工具调用等待人工审批的时长，默认 5m，超时按拒绝处理 |
 | `-context-edit <auto\|off\|n>` | prompt 超过这个大小就丢弃旧的工具输出，默认 `auto`（模型窗口的五分之四）。见「上下文清理」 |
 | `-web-dev <url>` | 把非 API 路由反代到 vite 开发服务器 |
+| `-web-panel <名称=url>` | 把一个外部 web 应用挂进 dock 作为 sheet 显示，可重复；应用被反代到 `/panels/<名称>/`，与页面同源（见「浏览器界面」） |
 
 ## 给程序读的输出：`-mode json`
 
@@ -413,6 +414,8 @@ cd ../.. && go build -o pi-go .
 ```
 
 开发时用 `pi-go -web -web-dev http://localhost:5173`（另一个终端 `cd web/ui && npm run dev`）：浏览器只跟 Go 服务器打交道，非 API 路由被反代给 vite，所以单一 origin、token 照常工作，HMR 也能用。
+
+**外部面板：`-web-panel 名称=url`（可重复）。** 右侧 dock 是一个 sheet 容器——文件、Shell、每个注册的外部面板各占一个 sheet，由常显的图标栏切换。外部应用经 `/panels/<名称>/` 反代接入（与页面同源，不开 CORS），恶意代码分析平台这类场景应用不用改 pi-go 就能挂进来。只注册你信任的后端：面板与页面同源，和 `-skill` 一样是运营者的显式决定。
 
 三件事值得知道：
 
@@ -1391,6 +1394,7 @@ Note: piped input **always triggers one-shot mode** and never enters the REPL. O
 | `-gate-timeout <dur>` | How long a tool call waits for human approval; default 5m, timeout is treated as denied |
 | `-context-edit <auto\|off\|n>` | Discard older tool output once the prompt exceeds this size; default `auto` (four-fifths of the model window). See "Context cleaning" |
 | `-web-dev <url>` | Reverse-proxy non-API routes to a vite dev server |
+| `-web-panel <name=url>` | Show an external web app as a dock sheet (repeatable); reverse-proxied at `/panels/<name>/`, same origin as the page |
 
 ## JSON Output: `-mode json`
 
@@ -1644,6 +1648,8 @@ cd ../.. && go build -o pi-go .
 ```
 
 For development use `pi-go -web -web-dev http://localhost:5173` (in another terminal `cd web/ui && npm run dev`): the browser only talks to the Go server, non-API routes are reverse-proxied to vite, so single origin, the token still works, and HMR is usable.
+
+**External panels: `-web-panel name=url` (repeatable).** The right dock is a sheet container — files, the shell, and each registered panel are sheets switched by an always-visible icon rail. Panel apps are reverse-proxied at `/panels/<name>/` (same origin as the page, no CORS), so scenario applications plug in without touching pi-go. Register only backends you trust: panels share the page's origin, and like `-skill` the flag is an explicit operator decision.
 
 Three things worth knowing:
 

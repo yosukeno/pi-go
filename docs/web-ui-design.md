@@ -1117,3 +1117,17 @@ POST   /api/workspace/journal/clear       清空基线（diff 从此刻重新累
 `reset --hard` 之后还要跟一个 `clean -fd`：reset 不管未跟踪文件，而被放弃的那次 run 新建的文件正是未跟踪的——**放过它们的撤回只撤了一半**。被 ignore 的路径留着，那正是 ignore 它们而不是删掉的意义。
 
 影子分支随恢复一起回退，所以之后的 checkpoint 从恢复后的状态分叉——和 transcript 的分叉对上。
+
+---
+
+## 19. 外部面板（-web-panel）与 dock sheet 化
+
+场景应用（如恶意代码分析平台）需要自己的数据页面，而基座的 UI 不该长领域页面。业界 2025–2026 的收敛答案（ChatGPT Apps SDK / MCP Apps 官方扩展 / VS Code webview）：**宿主从不实现领域 UI，它提供通用的展示槽**——沙箱 iframe + 同源反代。pi-go 的实现：
+
+**注册与代理。** `-web-panel 名称=url`（可重复）在启动时注册，经校验（名称不含 `/=`、URL 必须绝对 http(s)）。服务器挂两条路由：`GET /api/panels`（只报名字和 `/panels/<名称>/` 路径，后端 URL 不外泄——内部拓扑是服务器自己的事）和 `/panels/{name}/*` 的反向代理（`Rewrite` 剥前缀，裸 `/panels/<名称>` 301 到带斜杠，让相对链接落在前缀下）。代理模式复用 `-web-dev` 那套单源思路：面板与页面同源，Origin 中间件天然覆盖，不开 CORS。
+
+**鉴权边界（与页面同一套理由）。** 面板内容**不过** token——页面和静态资源也不过，因为它们都是内容而非操作；`/api/panels` 过，因为它是 `/api`。两条推论写进了 `Panel` 的 doc：面板后端有写操作就自己做鉴权；只注册可信后端——同源 iframe 能读到父页面 URL 里的 token，所以这把注册旗标和 `-skill` 一样是运营者的显式信任决定。
+
+**dock 从双排改成 sheet 容器。** 原「文件在上、shell 在下（或左右）」的双栏模型退役，换成 VS Code 活动栏模型：常显的 40px 图标栏（收起时它是 dock 唯一可见的部分，也是打开 sheet 的唯一入口），文件 / Shell / 每个外部面板各占一个 sheet，同时只显示一个，点当前图标收起。旧 localStorage（`pi-go:files-open`/`shell-open`）一次性迁移到 `pi-go:active-sheet`，拆分比例等几何键保留。外部 sheet 是带标题栏（名称 + 布局切换 + 关闭）的 iframe；内建 sheet 原样复用 FilesPanel/ShellPanel。
+
+**什么不在这里面：** postMessage 桥（面板→对话联动，如「问 agent 这个样本」）留待有真实需求时再加——MCP Apps 的桥解决的就是这个，但 v1 的面板只读浏览用不到；subagent 事件 sheet 化是这条框架预留的下一个住户，不在本次范围。
