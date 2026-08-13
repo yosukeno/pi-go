@@ -120,6 +120,7 @@ func newPanelProxy(p Panel) *httputil.ReverseProxy {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/models", s.handleModels)
 	s.mux.HandleFunc("GET /api/skills", s.handleSkills)
+	s.mux.HandleFunc("GET /api/starters", s.handleStarters)
 	s.mux.HandleFunc("GET /api/panels", s.handlePanels)
 	// Panel proxy: content, not operations, so like the page itself it is not
 	// token-gated (see the Panel doc). Bare /panels/<name> redirects to the
@@ -341,6 +342,74 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"skills": out})
+}
+
+// handleStarters serves the cards an empty conversation offers. The content is
+// the skill's, not pi-go's: a deployment describes its own openings, and this
+// server only checks that each one can actually do something.
+//
+// Read per request so an edited starters.json shows up on reload — the same
+// reason /skill:name re-reads the instructions. The files are small and this is
+// fetched once per page.
+func (s *Server) handleStarters(w http.ResponseWriter, r *http.Request) {
+	warn := func(format string, args ...any) {
+		if s.opts.Logger != nil {
+			s.opts.Logger.Printf(format, args...)
+		}
+	}
+	all, diags := skills.LoadStarters(s.mgr.Skills())
+	for _, d := range diags {
+		warn("starters: %s: %s", d.Path, d.Message)
+	}
+
+	registered := map[string]bool{}
+	for _, p := range s.opts.Panels {
+		registered[p.Name] = true
+	}
+
+	// One empty state, so the first heading and the first send flag win; cards
+	// concatenate in skill order and stop at the layout's limit.
+	// A card pointing at a panel this process never registered would be a button
+	// that does nothing, which is worse than one card fewer.
+	keepable := func(skill string, cards []skills.StarterCard) []skills.StarterCard {
+		out := make([]skills.StarterCard, 0, len(cards))
+		for _, c := range cards {
+			if c.Panel != "" && !registered[c.Panel] {
+				warn("starters: %s: card %q names unregistered panel %q; skipped", skill, c.Title, c.Panel)
+				continue
+			}
+			out = append(out, c)
+		}
+		return out
+	}
+
+	out := struct {
+		Heading   string                 `json:"heading,omitempty"`
+		Send      bool                   `json:"send,omitempty"`
+		Cards     []skills.StarterCard   `json:"cards"`
+		Followups []skills.FollowupGroup `json:"followups"`
+	}{Cards: []skills.StarterCard{}, Followups: []skills.FollowupGroup{}}
+
+	for _, st := range all {
+		if out.Heading == "" {
+			out.Heading = st.Heading
+			out.Send = st.Send
+		}
+		for _, c := range keepable(st.Skill, st.Cards) {
+			if len(out.Cards) == skills.MaxStarterCards {
+				break
+			}
+			out.Cards = append(out.Cards, c)
+		}
+		for _, g := range st.Followups {
+			// A group whose chips all pointed at missing panels would render an
+			// empty row, so it drops out with them.
+			if chips := keepable(st.Skill, g.Chips); len(chips) > 0 {
+				out.Followups = append(out.Followups, skills.FollowupGroup{When: g.When, Chips: chips})
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"starters": out})
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {

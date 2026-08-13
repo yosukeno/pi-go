@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import MarkdownIt from "markdown-it";
 import { ArrowLeft, Check, CopyDocument, EditPen } from "@element-plus/icons-vue";
 import CodeBlock from "./CodeBlock.vue";
+import MarkdownView from "./MarkdownView.vue";
+import MermaidDiagram from "./MermaidDiagram.vue";
 import { api, fileRawURL } from "@/api/client";
 import type { FileContent } from "@/api/types";
 
@@ -12,10 +13,6 @@ import type { FileContent } from "@/api/types";
 // highlighted, anything binary politely declined.
 const props = defineProps<{ path: string }>();
 const emit = defineEmits<{ back: [] }>();
-
-// html:false plus markdown-it's escaping, the same combination TurnCard uses
-// for assistant text: a workspace file can contain anything.
-const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
 
 const content = ref<FileContent | null>(null);
 const failed = ref("");
@@ -40,6 +37,8 @@ const ext = computed(() => {
 });
 
 const isMd = computed(() => ext.value === "md" || ext.value === "markdown");
+const isMermaid = computed(() => ext.value === "mmd" || ext.value === "mermaid");
+const hasPreview = computed(() => isMd.value || isMermaid.value);
 
 const kind = computed(() => {
   const c = content.value;
@@ -58,8 +57,6 @@ async function load() {
   }
 }
 watch(() => props.path, load, { immediate: true });
-
-const renderedMd = computed(() => (content.value?.text ? md.render(content.value.text) : ""));
 
 function fmtSize(n?: number): string {
   if (n === undefined) return "";
@@ -167,7 +164,7 @@ async function discard() {
           {{ content.truncated_by === "lines" ? t("filePreview.truncatedLines") : t("filePreview.truncatedSize") }}
         </span>
         <span class="spacer" />
-        <template v-if="kind === 'text' && isMd">
+        <template v-if="kind === 'text' && hasPreview">
           <button class="mode" :class="{ on: mdPreview }" @click="mdPreview = true">{{ t("filePreview.preview") }}</button>
           <button class="mode" :class="{ on: !mdPreview }" @click="mdPreview = false">{{ t("filePreview.source") }}</button>
         </template>
@@ -180,8 +177,16 @@ async function discard() {
         <div v-else-if="kind === 'binary'" class="note">
           {{ t("filePreview.binaryNoPreview", { mime: content.mime ?? "" }) }}
         </div>
-        <!-- eslint-disable-next-line vue/no-v-html -- escaped by markdown-it -->
-        <div v-else-if="isMd && mdPreview" class="md" v-html="renderedMd" />
+        <MarkdownView
+          v-else-if="isMd && mdPreview"
+          class="md"
+          :source="content.text ?? ''"
+        />
+        <MermaidDiagram
+          v-else-if="isMermaid && mdPreview"
+          class="md"
+          :source="content.text ?? ''"
+        />
         <CodeBlock
           v-else
           :code="content.text ?? ''"

@@ -455,6 +455,37 @@ export interface SkillInfo {
   manual_only?: boolean;
 }
 
+// StarterCard is one card on the empty conversation. The content comes from a
+// skill's starters.json, so the deployment decides what its agent is for; the
+// server has already validated that exactly one action is present, that the icon
+// is a known name, and that a panel card names a registered panel.
+export interface StarterCard {
+  icon?: string;
+  title: string;
+  label?: string;
+  /** Put this text in the composer. Mutually exclusive with panel. */
+  prompt?: string;
+  /** Open this dock panel. */
+  panel?: string;
+  /** Hash route inside the panel, e.g. "#/clusters". */
+  at?: string;
+}
+
+// FollowupGroup offers the next step after a turn. `when` is matched against
+// what the last turn did (its tool calls and reply); no match shows nothing.
+export interface FollowupGroup {
+  when: string[];
+  chips: StarterCard[];
+}
+
+export interface Starters {
+  heading?: string;
+  /** Send a prompt card on click instead of filling the composer. */
+  send?: boolean;
+  cards: StarterCard[];
+  followups?: FollowupGroup[];
+}
+
 // PanelInfo is an external web app registered with -web-panel. path is the
 // same-origin prefix the iframe loads (/panels/<name>/); the backend URL is
 // never exposed to the page.

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { ref } from "vue";
 import { useI18n } from "vue-i18n";
-import MarkdownIt from "markdown-it";
+import MarkdownView from "./MarkdownView.vue";
 import ToolCall from "./ToolCall.vue";
 import IncomingArgs from "./tools/IncomingArgs.vue";
 import type { TurnItem } from "@/agent/timeline";
@@ -23,15 +23,6 @@ const emit = defineEmits<{
   freeze: [string];
   thaw: [string];
 }>();
-
-// html:false plus markdown-it's own escaping is what makes the v-html below safe:
-// the answer text can contain anything the model or a file produced.
-const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
-
-// Markdown is only rendered once the turn has settled. Re-rendering on every
-// token is the classic way to make a streaming UI crawl, and the raw text reads
-// perfectly well while it is still arriving.
-const rendered = computed(() => (props.turn.streaming ? "" : md.render(props.turn.text)));
 
 const thinkingOpen = ref(false);
 </script>
@@ -67,9 +58,11 @@ const thinkingOpen = ref(false);
          appear; tool_start removes the entry, so the two never overlap. -->
     <IncomingArgs v-for="inc in turn.incoming ?? []" :key="inc.call_id" :incoming="inc" />
 
-    <div v-if="turn.streaming && turn.text" class="answer raw">{{ turn.text }}</div>
-    <!-- eslint-disable-next-line vue/no-v-html -->
-    <div v-else-if="turn.text" class="answer" v-html="rendered" />
+    <!-- Markdown is parsed live while streaming: markdown-it is cheap and the token
+         stream is already throttled to ~12fps, so formatting appears as the answer
+         grows instead of snapping in at the end. The one heavy, error-prone piece on
+         an incomplete source is Mermaid, which MarkdownView defers via `streaming`. -->
+    <MarkdownView v-if="turn.text" class="answer" :source="turn.text" :streaming="turn.streaming" />
   </div>
 </template>
 
@@ -123,10 +116,6 @@ const thinkingOpen = ref(false);
   margin-top: 6px;
   font-size: 14px;
   line-height: 1.7;
-
-  &.raw {
-    white-space: pre-wrap;
-  }
 
   :deep(p) {
     margin: 0.4em 0;

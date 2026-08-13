@@ -14,11 +14,20 @@ import "@xterm/xterm/css/xterm.css";
 // nobody pays for until the panel exists. The shell outlives this component
 // (detaching only closes the socket), so reopening or switching sessions and
 // coming back replays the server's backlog instead of starting over.
-const props = defineProps<{
-  sessionId: string | null;
-  layout: "right" | "bottom";
-  workspace?: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    sessionId: string | null;
+    layout: "right" | "bottom";
+    workspace?: string;
+    /**
+     * Draw the panel's own title bar. False when the shell is a tenant of the
+     * dock's hub, which supplies one header for whichever tenant is showing —
+     * two stacked title bars would spend twice the height saying it once.
+     */
+    header?: boolean;
+  }>(),
+  { header: true },
+);
 const emit = defineEmits<{ close: []; "update:layout": ["right" | "bottom"] }>();
 const { t } = useI18n();
 
@@ -160,7 +169,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="shell-panel">
-    <header class="head">
+    <header v-if="header" class="head">
       <span class="title">
         <Icon :icon="terminalIcon" width="14" />
         Shell

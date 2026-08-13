@@ -73,7 +73,16 @@ type termMessage struct {
 func startTerminal(cwd string, cols, rows int) (*Terminal, error) {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
-		shell = "/bin/zsh"
+		// $SHELL is almost never set inside a container (no login shell sets it),
+		// so a hardcoded fallback determines whether the panel opens at all. zsh is
+		// a nice interactive shell but absent from stock Debian/Alpine — defaulting
+		// to it made startTerminal fail with "no such file" and the panel could never
+		// attach. bash is near-universal, and sh is the POSIX floor beneath it.
+		if _, err := os.Stat("/bin/bash"); err == nil {
+			shell = "/bin/bash"
+		} else {
+			shell = "/bin/sh"
+		}
 	}
 	if cols <= 0 {
 		cols = 80

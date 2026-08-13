@@ -4,6 +4,7 @@ import type {
   FilesResponse,
   ModelInfo,
   PanelInfo,
+  Starters,
   PolicyMode,
   PolicyState,
   SessionInfo,
@@ -64,6 +65,11 @@ export const api = {
   // External panels registered with -web-panel; same once-at-boot fetch rule
   // as skills.
   panels: () => request<{ panels: PanelInfo[] }>("GET", "/api/panels"),
+
+  // Empty-state cards contributed by the loaded skills. Fetched at boot like
+  // the two above; the server re-reads the files each time, so a reload is
+  // enough to pick up an edited starters.json.
+  starters: () => request<{ starters: Starters }>("GET", "/api/starters"),
 
   sessions: () => request<{ sessions: SessionInfo[]; cwd: string }>("GET", "/api/sessions"),
 

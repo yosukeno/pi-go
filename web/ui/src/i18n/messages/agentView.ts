@@ -66,6 +66,15 @@ export default {
       topbar: {
         files: "工作区文件",
       },
+      dock: {
+        hub: "面板",
+        shell: "Shell",
+        switchTenant: "切换面板",
+        maximize: "最大化",
+        restore: "还原大小",
+        toStacked: "底部布局",
+        toSideBySide: "右侧布局",
+      },
       notice: {
         policyReverted: "全自动已到期，回到 standard 模式（{reason}）",
         retrying: "正在重试 {attempt}/{max}，等待 {delay}：{reason}",
@@ -180,6 +189,15 @@ export default {
       },
       topbar: {
         files: "Workspace files",
+      },
+      dock: {
+        hub: "Panel",
+        shell: "Shell",
+        switchTenant: "Switch panel",
+        maximize: "Maximize",
+        restore: "Restore size",
+        toStacked: "Dock to bottom",
+        toSideBySide: "Dock to right",
       },
       notice: {
         policyReverted: "Auto mode expired; back to standard mode ({reason})",
@@ -297,6 +315,15 @@ export default {
       topbar: {
         files: "ワークスペースファイル",
       },
+      dock: {
+        hub: "パネル",
+        shell: "Shell",
+        switchTenant: "パネルを切り替え",
+        maximize: "最大化",
+        restore: "元のサイズに戻す",
+        toStacked: "下部に配置",
+        toSideBySide: "右側に配置",
+      },
       notice: {
         policyReverted: "全自動が期限切れになり、standard モードに戻りました（{reason}）",
         retrying: "再試行 {attempt}/{max}、{delay} 待機中：{reason}",
@@ -409,6 +436,15 @@ export default {
       },
       topbar: {
         files: "작업 공간 파일",
+      },
+      dock: {
+        hub: "패널",
+        shell: "Shell",
+        switchTenant: "패널 전환",
+        maximize: "최대화",
+        restore: "원래 크기로",
+        toStacked: "아래쪽에 배치",
+        toSideBySide: "오른쪽에 배치",
       },
       notice: {
         policyReverted: "전자동이 만료되어 standard 모드로 돌아갔습니다({reason})",

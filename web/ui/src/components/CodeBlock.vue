@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
+import { Icon } from "@iconify/vue";
 import AnsiText from "./AnsiText.vue";
 import { detectLanguage, highlightLines } from "./highlight";
+import { languageIcon, terminalIcon } from "./fileIcons";
 
 // A code viewer with syntax colouring, a collapse and a copy button.
 //
@@ -50,6 +52,10 @@ const label = computed(() => {
   return props.lang || t("codeBlock.text");
 });
 
+// The badge carries a file-type icon so the language reads as a tag rather than
+// as one more button next to copy/collapse.
+const badgeIcon = computed(() => (props.terminal ? terminalIcon : languageIcon(props.lang)));
+
 async function copy() {
   try {
     await navigator.clipboard.writeText(props.code);
@@ -64,7 +70,7 @@ async function copy() {
 <template>
   <div class="code-block" :class="{ terminal }">
     <div class="bar">
-      <span class="lang">{{ label }}</span>
+      <span class="lang"><Icon class="kind" :icon="badgeIcon" />{{ label }}</span>
       <span class="count">{{ t("codeBlock.lineCount", { n: rowCount }) }}</span>
       <button class="ghost" @click="copy">{{ copied ? t("common.copied") : t("common.copy") }}</button>
       <button v-if="collapsible" class="ghost" @click="expanded = !expanded">
@@ -98,6 +104,18 @@ async function copy() {
     .count {
       color: #d6d7db;
     }
+
+    /* The label pill and the collapsed fade are otherwise driven by light-theme
+       CSS vars (--el-fill-color*), which on this dark surface read as a white
+       pill and a white band washing out the last lines of output. Pull both
+       onto the terminal's own dark ramp. */
+    .lang {
+      background: #2c2e33;
+    }
+
+    .fade {
+      background: linear-gradient(transparent, #1e1f22);
+    }
   }
 }
 
@@ -111,8 +129,25 @@ async function copy() {
   border-bottom: 1px solid var(--el-border-color-lighter);
 }
 
+/* A tag, not a control: icon + name on a filled pill, so the eye separates it
+   from the copy/collapse buttons on the other end of the bar. */
 .lang {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px 1px 5px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  background: var(--el-fill-color);
+  color: var(--el-text-color-regular);
   font-weight: 600;
+  line-height: 1.7;
+
+  .kind {
+    width: 13px;
+    height: 13px;
+    flex: 0 0 auto;
+  }
 }
 
 .count {

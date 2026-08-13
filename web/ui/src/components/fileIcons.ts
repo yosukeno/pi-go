@@ -66,6 +66,18 @@ export const terminalIcon: FileIcon = {
   height: 1024,
 };
 
+// Workspace / monitor icon (Resource Library/ts-work-space.svg): the dock
+// rail's "files" sheet — a desktop monitor with an orange content bar. Like
+// the yellow folder it replaces, the fills are hardcoded so the icon keeps its
+// look in every rail state (the folder never followed currentColor either).
+export const workspaceIcon: FileIcon = {
+  body:
+    '<path fill="#211B13" d="M0 768a109.714286 109.714286 0 0 0 109.714286 109.714286h209.188571l-18.285714 73.142857H182.857143a36.571429 36.571429 0 0 0 0 73.142857h658.285714a36.571429 36.571429 0 0 0 0-73.142857h-136.045714l-18.285714-73.142857H914.285714a109.714286 109.714286 0 0 0 109.714286-109.714286V402.285714a36.571429 36.571429 0 0 0-73.142857 0v365.714286a36.571429 36.571429 0 0 1-36.571429 36.571429H109.714286a36.571429 36.571429 0 0 1-36.571429-36.571429V109.714286a36.571429 36.571429 0 0 1 36.571429-36.571429h804.571428a36.571429 36.571429 0 0 1 36.571429 36.571429v73.142857a36.571429 36.571429 0 0 0 73.142857 0V109.714286a109.714286 109.714286 0 0 0-109.714286-109.714286H109.714286a109.714286 109.714286 0 0 0-109.714286 109.714286z m611.474286 109.714286l18.285714 73.142857H375.954286l18.285714-73.142857z"/>' +
+    '<path fill="#FFB243" d="M182.857143 585.142857a36.571429 36.571429 0 0 0 0 73.142857h658.285714a36.571429 36.571429 0 0 0 0-73.142857z"/>',
+  width: 1024,
+  height: 1024,
+};
+
 // Chat bubble with text lines (参考资料/message.svg): marks the message a
 // dialog is about. fill=currentColor so it follows the context's color.
 export const messageIcon: FileIcon = {
@@ -260,4 +272,50 @@ export function fileIcon(name: string): FileIcon {
 export function baseName(path: string): string {
   const i = path.lastIndexOf("/");
   return i < 0 ? path : path.slice(i + 1);
+}
+
+// Language names as written in a markdown fence are not always file extensions,
+// so the spelling is normalised before reusing the extension table above.
+const LANG_EXT: Record<string, string> = {
+  golang: "go",
+  javascript: "js",
+  typescript: "ts",
+  python: "py",
+  shell: "sh",
+  bash: "sh",
+  zsh: "sh",
+  console: "sh",
+  csharp: "cs",
+  "c#": "cs",
+  fsharp: "fs",
+  kotlin: "kt",
+  rust: "rs",
+  ruby: "rb",
+  golang_test: "go",
+  "c++": "cpp",
+  cplusplus: "cpp",
+  objectivec: "m",
+  markdown: "md",
+  yaml: "yml",
+  mermaid: "mmd",
+  yara: "yar",
+  dockerfile: "docker",
+  makefile: "makefile",
+  text: "txt",
+  plaintext: "txt",
+  html: "html",
+  xml: "xml",
+  json5: "json",
+  jsonc: "json",
+};
+
+/** Resolve a fenced-code language hint (or file extension) to its type icon. */
+export function languageIcon(lang: string | undefined): FileIcon {
+  const key = (lang ?? "").toLowerCase().replace(/^\./, "").trim();
+  if (!key) return DEFAULT_FILE;
+  const mapped = LANG_EXT[key] ?? key;
+  // Some hints are whole file names (Dockerfile, Makefile); those resolve directly.
+  const special = SPECIAL_NAMES[mapped];
+  if (special) return icon(`file-type-${special}`) ?? DEFAULT_FILE;
+  return fileIcon(`x.${mapped}`);
 }

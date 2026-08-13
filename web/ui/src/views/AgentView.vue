@@ -32,8 +32,21 @@ import { baseName, fileIcon, messageIcon, sessionIcon } from "@/components/fileI
 import { useAgentStream } from "@/agent/useAgentStream";
 import { buildTimeline, formatDuration, parseSkillBlock } from "@/agent/timeline";
 import { invalidateTree } from "@/components/fileTreeStore";
+import { migrateSheet, PANEL_PREFIX, SHEET_KEY, TENANT_KEY } from "@/components/dockSheets";
+import StarterCards from "@/components/StarterCards.vue";
+import FollowupChips from "@/components/FollowupChips.vue";
+import { planIntent } from "@/agent/composerIntent";
+import { followupHaystack, matchFollowups } from "@/agent/followups";
 import { api, token } from "@/api/client";
-import type { ModelInfo, PanelInfo, PolicyMode, SessionInfo, SkillInfo } from "@/api/types";
+import type {
+  ModelInfo,
+  PanelInfo,
+  PolicyMode,
+  SessionInfo,
+  SkillInfo,
+  StarterCard,
+  Starters,
+} from "@/api/types";
 import { LOCALE_LABELS, SUPPORTED_LOCALES, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 
@@ -104,24 +117,61 @@ async function collapseSidebar() {
   );
 }
 
-// The right dock is a sheet container (files / shell / external panels), one
-// sheet at a time; the active sheet persists. Legacy files/shell booleans
-// migrate into it once.
-const SHEET_KEY = "pi-go:active-sheet";
-const legacySheet = localStorage.getItem("pi-go:files-open") === "1"
-  ? "files"
-  : localStorage.getItem("pi-go:shell-open") === "1"
-    ? "shell"
-    : null;
-const initialSheet = localStorage.getItem(SHEET_KEY) ?? legacySheet;
-const activeSheet = ref<string | null>(initialSheet || null);
-watch(activeSheet, (v) => (v ? localStorage.setItem(SHEET_KEY, v) : localStorage.removeItem(SHEET_KEY)));
+// The right dock has two sheets — workspace files, and the hub that holds the
+// shell and every -web-panel. Which sheet is open and which tenant the hub
+// shows both persist; every id older builds wrote is folded onto this pair by
+// migrateSheet, which is idempotent so downgrades cannot strand anyone.
+const stored = migrateSheet({
+  sheet: localStorage.getItem(SHEET_KEY),
+  legacyFiles: localStorage.getItem("pi-go:files-open") === "1",
+  legacyShell: localStorage.getItem("pi-go:shell-open") === "1",
+});
+const activeSheet = ref<string | null>(stored.sheet);
+// A tenant carried by the old sheet id wins over the remembered one: it is the
+// more specific statement of where the user actually was.
+const hubTenant = ref<string | null>(stored.tenant ?? localStorage.getItem(TENANT_KEY));
+// Deliberately not persisted — see DockArea's maximized comment.
+const hubMaximized = ref(false);
+watch(activeSheet, (v) => {
+  if (v) localStorage.setItem(SHEET_KEY, v);
+  else localStorage.removeItem(SHEET_KEY);
+  // Maximize belongs to the hub; leaving it set would silently apply to
+  // whatever sheet opened next, with no control on screen to undo it.
+  if (v !== "hub") hubMaximized.value = false;
+});
+watch(hubTenant, (v) => (v ? localStorage.setItem(TENANT_KEY, v) : localStorage.removeItem(TENANT_KEY)));
+// Rewrite the migrated values now rather than waiting for the first change, so
+// a session that never touches the dock still leaves the new keys behind.
+if (activeSheet.value) localStorage.setItem(SHEET_KEY, activeSheet.value);
+else localStorage.removeItem(SHEET_KEY);
+if (hubTenant.value) localStorage.setItem(TENANT_KEY, hubTenant.value);
 localStorage.removeItem("pi-go:files-open");
 localStorage.removeItem("pi-go:shell-open");
 
 // External panels registered with -web-panel, fetched once at boot (the set is
 // fixed for the life of the server, like skills).
 const panels = ref<PanelInfo[]>([]);
+
+// A hash route to open the current panel tenant at, set by a starter card that
+// deep-links into it. Not persisted and cleared as soon as the user switches
+// tenant by hand: it describes one navigation, not a preference.
+const hubAt = ref<string | null>(null);
+
+// Empty-state cards contributed by the loaded skills. Absent for a plain pi-go,
+// which then keeps its one-line hint.
+const starters = ref<Starters | null>(null);
+const starterCards = computed(() => starters.value?.cards ?? []);
+
+// Next-step chips, matched against what the last turn actually did. Hidden while
+// a run is in flight or a gate is waiting: a suggestion competing with an
+// approval card is asking the user to do two things at once, and one of them
+// blocks the agent.
+const followupChips = computed(() => {
+  const groups = starters.value?.followups ?? [];
+  if (!groups.length || busy.value || !timeline.value.length) return [];
+  if (stream.live.value.pending_gates.length > 0) return [];
+  return matchFollowups(groups, followupHaystack(timeline.value));
+});
 
 // The panel's dock side: right (the default) or bottom, persisted the same way.
 // The toggle itself lives in the panel's header, Chrome DevTools style.
@@ -172,7 +222,7 @@ onMounted(async () => {
   if (!token) {
     showFlash(t("agentView.flash.noToken"), "error", true);
   }
-  await Promise.all([loadSessions(), loadModels(), loadSkills(), loadPanels()]);
+  await Promise.all([loadSessions(), loadModels(), loadSkills(), loadPanels(), loadStarters()]);
   if (sessions.value.length > 0) open(sessions.value[0].id);
   else await createSession();
 });
@@ -222,8 +272,37 @@ async function loadPanels() {
   try {
     panels.value = (await api.panels()).panels;
   } catch {
-    // Non-fatal: the rail just shows no external sheets.
+    // Non-fatal: the hub just has no external tenants.
   }
+}
+
+async function loadStarters() {
+  try {
+    const res = await api.starters();
+    const s = res.starters;
+    starters.value = s && (s.cards?.length || s.followups?.length) ? s : null;
+  } catch {
+    // Non-fatal: the empty state falls back to its built-in hint.
+  }
+}
+
+// A starter card does one of two things, and neither of them is "run something
+// the user did not read". A panel card navigates; a prompt card goes through
+// planIntent, which fills the composer unless the deployment opted into sending.
+function onStarter(c: StarterCard) {
+  if (c.panel) {
+    hubTenant.value = PANEL_PREFIX + c.panel;
+    hubAt.value = c.at ?? null;
+    activeSheet.value = "hub";
+    return;
+  }
+  // The server validated this already; re-checking here keeps the composer's
+  // one entry point authoritative rather than trusting the wire.
+  const plan = planIntent({ text: c.prompt ?? "", send: starters.value?.send });
+  if (plan.kind === "rejected") return;
+  input.value = plan.text;
+  if (plan.kind === "send") void send();
+  else nextTick(() => inputBox.value?.focus());
 }
 
 // The slash-command list, in the order the hint row prints it. Order is
@@ -612,6 +691,20 @@ watch(
     inputBox.value?.focus();
   },
 );
+
+// A dock panel asked the conversation something. Unlike a starter card this
+// always fills and never sends, whatever the deployment configured: a panel is
+// content the server hands out without the token because it is content, and
+// content that could spend a model call on its own would stop being that.
+//
+// Un-maximizing is not a nicety — a maximized hub covers the conversation, so
+// filling a composer the user cannot see would look like nothing happened.
+function onPanelIntent(text: string) {
+  const plan = planIntent({ text });
+  if (plan.kind === "rejected") return;
+  hubMaximized.value = false;
+  suggest(plan.text);
+}
 
 function suggest(text: string) {
   input.value = text;
@@ -1024,9 +1117,21 @@ function rewindStatusLabel(status: string) {
                4px) until the new session's snapshot lands, then fades back —
                a crossfade, not a blank-and-pop. useAgentStream.hold. -->
           <div ref="convInner" class="conv-inner" :class="{ switching: stream.switching.value }">
-            <div v-if="!timeline.length" class="empty">
-              {{ t("agentView.empty.hint") }}
-            </div>
+            <!-- The empty state is where a deployment says what it is for. With
+                 no skill-provided cards this is the original one-line hint, so
+                 a plain pi-go looks exactly as before. -->
+            <template v-if="!timeline.length">
+              <StarterCards
+                v-if="starterCards.length"
+                :heading="starters?.heading"
+                :cards="starterCards"
+                :fallback="t('agentView.empty.hint')"
+                @pick="onStarter"
+              />
+              <div v-else class="empty">
+                {{ t("agentView.empty.hint") }}
+              </div>
+            </template>
             <template v-for="item in timeline" :key="item.id">
               <div v-if="item.kind === 'user'" class="ask">
                 <!-- WeChat/iMessage pattern: the send time sits centred above
@@ -1076,6 +1181,10 @@ function rewindStatusLabel(status: string) {
               <span class="pend-dots"><i /><i /><i /></span>
               {{ t("agentView.waiting") }}
             </div>
+            <!-- Next-step chips, after the answer they follow from. Only when a
+                 skill's condition matches what the last turn did; see
+                 agent/followups.ts for why silence is the default. -->
+            <FollowupChips v-if="followupChips.length" :chips="followupChips" @pick="onStarter" />
           </div>
         </div>
 
@@ -1199,11 +1308,17 @@ function rewindStatusLabel(status: string) {
     <DockArea
       v-model:layout="panelLayout"
       :active="activeSheet"
+      :tenant="hubTenant"
+      :at="hubAt"
+      :maximized="hubMaximized"
       :panels="panels"
       :items="timeline"
       :workspace="currentWorkspace"
       :session-id="current"
       @update:active="activeSheet = $event"
+      @update:tenant="hubTenant = $event; hubAt = null"
+      @update:maximized="hubMaximized = $event"
+      @intent="onPanelIntent"
     />
 
     <WorkspacePicker v-if="pickerOpen" :cwd="cwd" @create="onCreateWorkspace" @close="pickerOpen = false" />
