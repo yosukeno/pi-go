@@ -548,6 +548,30 @@ export interface FileContent {
   mtime_ms?: number;
 }
 
+// --- Version control state (web-ui-design.md §18.6) ------------------------
+
+// GitStatus mirrors git.Status. Counts, not paths: the panel below already lists
+// files, and a list here would grow without bound with the repository.
+export interface GitStatus {
+  repo: boolean;
+  root?: string;
+  branch?: string;
+  detached?: boolean;
+  unborn?: boolean;
+  head?: string;
+  subject?: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  conflicted: number;
+  // Why there is no answer, when the reason is neither "no repository" nor a
+  // real state — no git binary, a timeout, a broken repository.
+  unavailable?: string;
+}
+
 // --- Workspace-level changes (journal-backed, web-ui-design.md §16 M4) -----
 
 export interface WorkspaceChange {

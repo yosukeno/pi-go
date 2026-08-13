@@ -5,6 +5,7 @@ import { Close, Refresh, Search } from "@element-plus/icons-vue";
 import FileTree from "./FileTree.vue";
 import FilePreview from "./FilePreview.vue";
 import ChangesView from "./ChangesView.vue";
+import GitBar from "./GitBar.vue";
 import QuickOpen from "./QuickOpen.vue";
 import { clearTreeCache, indexEpoch, treeEpoch } from "./fileTreeStore";
 import { collectChanges, changedPathCount } from "@/agent/changes";
@@ -140,6 +141,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
         <el-icon><Close /></el-icon>
       </button>
     </header>
+    <!-- A second row rather than another chip in the header: the header is
+         already tabs plus four buttons, and this is the one thing here that is
+         a property of the workspace rather than of the panel. It renders
+         nothing at all when the state cannot be fetched. -->
+    <GitBar :epoch="epoch" />
     <div class="content">
       <QuickOpen v-if="searching" :paths="scopedIndex" @open="openFromSearch" @close="searching = false" />
       <div v-else-if="view === 'tree'" class="scroll">

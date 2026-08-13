@@ -15,6 +15,7 @@ import (
 
 	"github.com/yosukeno/pi-go/agent"
 	"github.com/yosukeno/pi-go/config"
+	"github.com/yosukeno/pi-go/git"
 	"github.com/yosukeno/pi-go/llm"
 	"github.com/yosukeno/pi-go/memory"
 	"github.com/yosukeno/pi-go/session"
@@ -70,6 +71,12 @@ type Config struct {
 	// so a value resolved once at startup would be wrong after the first switch.
 	// Empty means "auto".
 	ContextEdit string
+
+	// GitContext puts the workspace's version control state into every session's
+	// system prompt. The negative flag is -no-git-context; the zero value here is
+	// therefore "off", which is what the tests want — a Manager built without
+	// asking for it must not shell out to git.
+	GitContext bool
 
 	// NewClient overrides how an LLM client is built. It exists so tests can
 	// drive a whole run without a network, which is the only way to verify the
@@ -306,6 +313,30 @@ func insideRoot(root, abs string) bool {
 	return abs == root || strings.HasPrefix(abs, root+string(filepath.Separator))
 }
 
+// gitSection is the version control state for a new session's system prompt.
+//
+// Probed per session rather than once at startup, which is the balance between
+// two requirements pulling opposite ways: a system prompt that changes mid
+// session invalidates the cached prefix on every turn, but a session created an
+// hour into the server's life should see the repository as it is then, not as it
+// was at boot. Per session satisfies both.
+func (m *Manager) gitSection(cwd string) string {
+	if !m.cfg.GitContext {
+		return ""
+	}
+	return git.Probe(cwd).PromptSection()
+}
+
+// GitStatus is the workspace's version control state, for /api/workspace/git.
+//
+// Deliberately not gated on GitContext. That flag governs what the model is
+// told; this is what a person looks at, and someone who turned the prompt
+// injection off to save tokens has not asked to stop being shown their own
+// branch.
+func (m *Manager) GitStatus() git.Status {
+	return git.Probe(m.cfg.Cwd)
+}
+
 // Get returns a live session, loading it from disk when it is not in memory.
 func (m *Manager) Get(id string) (*Session, error) {
 	if !validID(id) {
@@ -469,7 +500,7 @@ func (m *Manager) newSession(store *session.Store, cfg config.Resolved, history 
 				Review: subagentReview(s.gate, s.hub),
 			},
 		}),
-		SystemPrompt: agent.SystemPrompt(cwd, m.skillSection, m.cfg.Memory.PromptSection()),
+		SystemPrompt: agent.SystemPrompt(cwd, m.skillSection, m.cfg.Memory.PromptSection(), m.gitSection(cwd)),
 		MaxTurns:     m.cfg.MaxTurns,
 		Gate:         s.gate,
 		// Half the run may go to waiting for approvals; the other half is for the

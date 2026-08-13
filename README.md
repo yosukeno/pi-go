@@ -152,6 +152,7 @@ echo "解释 Go 的 defer 执行时机" | pi-go
 | `-worktrees` | 列出本仓库的隔离 worktree 并退出 |
 | `-worktrees-prune` | 清理没有未保存改动、也没有活进程占用的隔离 worktree 并退出 |
 | `-checkpoints-prune` | 清理本工作区超出保留策略的撤回点并退出 |
+| `-no-git-context` | 不把工作区的 git 分支与未提交数量写进系统提示 |
 | `-web` | 启动浏览器界面（见下节） |
 | `-listen <addr>` | `-web` 的监听地址，默认 `127.0.0.1:7777` |
 | `-gate-timeout <dur>` | 工具调用等待人工审批的时长，默认 5m，超时按拒绝处理 |
@@ -542,6 +543,20 @@ journal 在第一次 `edit`/`write` 那个文件时记一份前像,之后重复�
 - **保留策略**:100 个撤回点或 30 天,先到先算,`-checkpoints-prune` 执行。做成命令而不是后台定时清扫,和 `-worktrees-prune` 同一个理由:pi-go 没有常驻进程,定时清扫意味着在一次无关的 run 里删掉别人的撤回点。在这之前答案是「永不清理」——影子仓会随着工作区被使用一直长。
 - **清理必须重写幸存的撤回点**,否则一个字节都不会释放:每个 checkpoint 提交都以前一个为父,分支把整条链拴在一起,删掉旧 ref 之后新提交仍然把它列为祖先。所以 prune 会在同样的 tree 上重建一条新链——**ref 名不变,commit id 变**——然后 `gc` 才真的能丢掉只有被删除的点引用过的对象。改 id 是安全的,因为和 transcript 的连接键是 ref **名**:预览和恢复每次都重新解析这个名字。
 - **排序不能用提交时间**。git 时间戳只有秒精度,几次快速的 run 会带着同一个时间,`--sort=-committerdate` 于是静默退化成按 ref 名排序——保留 `rec0`、`rec1` 而丢掉 `rec4`、`rec5`,正好是保留策略的反面。真正的顺序是提交链本身,所以用 `rev-list --all --topo-order` 拿一次全序。
+
+#### 你自己的 git：状态显示与提示注入
+
+影子仓管的是「撤回最近几轮」,它有意不碰你的历史。**这里管的是另一半:这是哪个分支、有没有提交过、这里到底有没有版本控制。**
+
+文件面板 header 下面多一行:分支 · `↑ahead ↓behind` · 未提交数量。tooltip 里是仓库根、head 提交和分项明细。**「未纳入 git 版本控制」是唯一上色的状态**,因为它是唯一一个你可能不知道自己身处其中的状态。
+
+- **报数量,绝不报内容。** 文件列表是无界的——同一个功能在 Claude Code 那边就因此变成每轮上万 token(anthropics/claude-code#8245)。副产品是 prompt section 的大小由构造保证有界,所以既没有 token 预算要调,也没有哪个仓库能把它撑大。
+- **绝不猜主干分支**(anthropics/claude-code#16767 是猜错的样子)。上游与 ahead/behind 由 `git status --porcelain=v2 --branch` 免费给出,是同一个问题更准的答案。
+- **仓库根会显示出来**,因为它不总是工作区:会话起在高了一层的目录上会静默报告父仓库的状态,而看见根路径是你唯一能发现的途径。
+- **端点永远 200**:没有仓库、没有 git、探测超时,都是要显示的状态而不是错误。和 checkpoint 同一条规则。
+- **`GIT_OPTIONAL_LOCKS=0` 不是优化**:`git status` 正常会占用索引锁,而这段代码跑的时候你可能正在同一个 checkout 里敲 git。一个会让你自己的提交失败的状态显示,比没有更糟。
+- **不主动 `git init`。** 非仓库时提示词里写明「说一次就够,不要在没被要求的情况下初始化仓库」。Codex 桌面端是提示你创建,它的 CLI 则是不在仓库里就拒绝启动——后者不抄:pi-go 的影子仓让非 git 目录照样能撤回,拦下来是自降能力。
+- `-no-git-context` 关掉**注入**,但不关**显示**:一个为了省 token 关掉注入的人,并没有要求从此看不见自己的分支。注入按会话探测一次(系统提示中途变化会让缓存前缀每轮失效),不是每轮。
 
 ### 会话侧栏:重命名与置顶
 
@@ -1432,6 +1447,7 @@ Note: piped input **always triggers one-shot mode** and never enters the REPL. O
 | `-worktrees` | List isolated worktrees of this repo and exit |
 | `-worktrees-prune` | Clean up isolated worktrees with no unsaved changes and no live process holding them; exit |
 | `-checkpoints-prune` | Discard this workspace's rewind points beyond the retention policy; exit |
+| `-no-git-context` | Do not tell the model the workspace's git branch and uncommitted counts |
 | `-web` | Launch the browser UI (see section below) |
 | `-listen <addr>` | Listen address for `-web`; default `127.0.0.1:7777` |
 | `-gate-timeout <dur>` | How long a tool call waits for human approval; default 5m, timeout is treated as denied |
@@ -1818,6 +1834,20 @@ A snapshot is taken at every run start and kept, so both of those are otherwise 
 - **Retention**: 100 rewind points or 30 days, whichever runs out first, applied by `-checkpoints-prune`. A command rather than a background sweep, for the same reason `-worktrees-prune` is one: pi-go has no daemon, so a timed sweep would mean deleting someone's rewind points from inside an unrelated run. Before this the answer was "never" — a workspace's shadow repo grew for as long as the workspace was worked in.
 - **Pruning has to rewrite the survivors** or it frees nothing: every checkpoint commit parents the one before it, so the branch keeps the whole chain reachable and a newer commit still lists a deleted ref's commit as an ancestor. Prune therefore rebuilds a fresh chain over the same trees — **same ref names, new commit ids** — and only then can `gc` drop the objects that only the discarded points referenced. Rewriting ids is safe because the join key with the transcript is the ref **name**: preview and restore resolve it every time.
 - **Ordering cannot come from commit dates.** Git timestamps have one-second resolution, so a handful of quick runs share one date and `--sort=-committerdate` silently falls back to sorting by ref name — keeping `rec0` and `rec1` while discarding `rec4` and `rec5`, the exact opposite of a retention policy. The real order is the commit chain, so a single `rev-list --all --topo-order` provides the total order.
+
+#### Your own git: status display and prompt context
+
+The shadow repo covers "undo the last few turns" and deliberately never touches your history. **This covers the other half: which branch is this, is any of it committed, is there version control here at all.**
+
+One line under the file panel's header: branch · `↑ahead ↓behind` · uncommitted count. The tooltip carries the repository root, the head commit and the breakdown. **"Not under version control" is the only state that gets colour**, because it is the only one you might not know you are in.
+
+- **Counts, never content.** A file list is unbounded — the same feature became a five-figure per-turn token cost in Claude Code for exactly that reason (anthropics/claude-code#8245). The by-product is that the prompt section's size is bounded by construction, so there is no token budget to tune and no repository that can inflate it.
+- **Never guess the trunk branch** (anthropics/claude-code#16767 is what guessing looks like). Upstream and ahead/behind come free from `git status --porcelain=v2 --branch`, and are a more precise answer to the same question.
+- **The repository root is shown**, because it is not always the workspace: a session started one directory too high silently reports a parent repository's state, and seeing the root is the only way you would notice.
+- **The endpoint is always 200**: no repository, no git binary and a timeout are states to render, not errors. Same rule as checkpointing.
+- **`GIT_OPTIONAL_LOCKS=0` is not an optimisation**: `git status` normally takes the index lock, and this runs while you may be running git in the same checkout. A status display that can make your own commit fail is worse than none.
+- **It does not run `git init`.** Outside a repository the prompt says to mention it once and not to initialise anything unasked. Codex's app offers to create one; its CLI refuses to start outside a repository — that half is not copied, because pi-go's shadow repo makes a non-git directory perfectly rewindable and refusing would be giving up a capability.
+- `-no-git-context` turns off the **injection**, not the **display**: someone who disabled it to save tokens has not asked to stop seeing their own branch. The injection is probed once per session (a system prompt that changes mid-session invalidates the cached prefix every turn), not per turn.
 
 ### Session sidebar: rename and pin
 

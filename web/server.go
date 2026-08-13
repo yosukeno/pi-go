@@ -144,6 +144,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/workspace/changes", s.handleWorkspaceChanges)
 	s.mux.HandleFunc("GET /api/workspace/diff", s.handleWorkspaceDiff)
 	s.mux.HandleFunc("POST /api/workspace/journal/clear", s.handleWorkspaceJournalClear)
+	s.mux.HandleFunc("GET /api/workspace/git", s.handleWorkspaceGit)
 	s.mux.HandleFunc("/", s.handleUI)
 }
 

@@ -1,8 +1,10 @@
 package web
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -448,5 +450,41 @@ func TestPruneCheckpointsWithoutAStore(t *testing.T) {
 	// Reporting must not create the store it just said was absent.
 	if _, err := os.Stat(CheckpointDir(sessionDir, cwd)); !os.IsNotExist(err) {
 		t.Error("a report must not create the shadow repository")
+	}
+}
+
+// The version control endpoint answers with a state, always. A workspace that is
+// not a repository is the normal case for a scratch directory, and an error there
+// would be the panel claiming something is broken when nothing is.
+func TestWorkspaceGitReportsAStateNotAnError(t *testing.T) {
+	// filesHarness because this endpoint must not reach the model either.
+	h := filesHarness(t)
+
+	resp := h.do(http.MethodGet, "/api/workspace/git", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/workspace/git = %d, want 200 even outside a repository", resp.StatusCode)
+	}
+	var got struct {
+		Repo        bool   `json:"repo"`
+		Unavailable string `json:"unavailable"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	// The harness workspace is a bare temp directory. Either answer is a state:
+	// no repository, or git missing from the image running the tests.
+	if got.Repo {
+		t.Errorf("a fresh temp workspace must not report a repository: %+v", got)
+	}
+}
+
+// GitContext is off in the zero Config, and that has to mean the prompt says
+// nothing about git — not that it says "unknown". A Manager nobody asked must not
+// shell out to git on every session it creates.
+func TestGitSectionIsSilentWhenNotAskedFor(t *testing.T) {
+	h := filesHarness(t)
+	if got := h.mgr.gitSection(h.mgr.Cwd()); got != "" {
+		t.Errorf("gitSection() = %q, want empty with GitContext off", got)
 	}
 }

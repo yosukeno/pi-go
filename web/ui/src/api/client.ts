@@ -2,6 +2,7 @@ import type {
   FileContent,
   FileIndexResponse,
   FilesResponse,
+  GitStatus,
   ModelInfo,
   PanelInfo,
   Starters,
@@ -186,6 +187,10 @@ export const api = {
 
   // One level at a time; 409 when it exists, 404 when the parent does not.
   mkdir: (path: string) => request<{ path: string }>("POST", "/api/files/mkdir", { path }),
+
+  // Version control state. Read-only and always 200: "not a repository" is a
+  // state to render, not an error (§18.6).
+  workspaceGit: () => request<GitStatus>("GET", "/api/workspace/git"),
 
   // Workspace-level changes, journaled against first-touch pre-images (§16 M4).
   workspaceChanges: () => request<{ changes: WorkspaceChange[] }>("GET", "/api/workspace/changes"),

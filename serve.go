@@ -38,8 +38,11 @@ type webOptions struct {
 	// "auto" is a fraction of the model's window, and the browser can switch models
 	// mid-session.
 	contextEdit string
-	skills      skills.Options
-	memory      memory.Options
+	// gitContext is the positive form of -no-git-context: whether each session's
+	// system prompt gets the workspace's version control state.
+	gitContext bool
+	skills     skills.Options
+	memory     memory.Options
 }
 
 // serveWeb runs the HTTP/SSE server.
@@ -97,6 +100,7 @@ func serveWeb(o webOptions) error {
 		MaxTurns:    o.maxTurns,
 		GateTimeout: o.gateTimeout,
 		ContextEdit: o.contextEdit,
+		GitContext:  o.gitContext,
 		Skills:      skillList,
 		Memory:      mem,
 	})
