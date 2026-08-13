@@ -678,6 +678,9 @@ type controlRequest struct {
 	Reason   string          `json:"reason"`
 	Remember string          `json:"remember"`
 
+	// Mode is read by two actions, which never co-occur: set_policy's approval
+	// mode, and rewind's "chat" | "files" | "both". This struct is a flat bag
+	// interpreted per action — Turns and AllowTool below are shared the same way.
 	Mode         string `json:"mode"`
 	Turns        int    `json:"turns"`
 	AllowTool    string `json:"allow_tool"`
@@ -693,9 +696,13 @@ type controlRequest struct {
 	// MessageID identifies the timeline message a rewind forks away from.
 	MessageID string `json:"message_id"`
 
-	// Files asks rewind to restore the workspace to the checkpoint taken when
-	// the message was sent, not just to fork the conversation.
-	Files bool `json:"files"`
+	// Rewind reads Mode above for what to act on. It replaced a files bool,
+	// because a bool could not express the third state — restore the work tree and
+	// leave the conversation where it is.
+	//
+	// Paths narrows a file restore to a subset of what the preview listed. Empty
+	// means the whole checkpoint. Only meaningful for the two file modes.
+	Paths []string `json:"paths"`
 }
 
 func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
@@ -737,7 +744,9 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, errors.New("message_id is required"))
 			return
 		}
-		err := sess.Rewind(req.MessageID, req.Files)
+		// No default mode. A rewind is destructive, and guessing which half of it
+		// was meant is the one place a helpful default would be dangerous.
+		err := sess.Rewind(req.MessageID, RewindMode(req.Mode), req.Paths)
 		switch {
 		case errors.Is(err, ErrRunActive):
 			writeErr(w, http.StatusConflict, err)
@@ -745,6 +754,8 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, err)
 		case errors.Is(err, errFilesUnavailable):
 			writeErr(w, http.StatusUnprocessableEntity, err)
+		case errors.Is(err, errRewindMode):
+			writeErr(w, http.StatusBadRequest, err)
 		case err != nil:
 			writeErr(w, http.StatusInternalServerError, err)
 		default:

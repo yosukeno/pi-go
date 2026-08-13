@@ -630,7 +630,7 @@ func TestRewindForksTheBranchAndRebuildsEveryView(t *testing.T) {
 	}
 
 	h.post("/api/sessions/"+sid+"/control",
-		fmt.Sprintf(`{"action":"rewind","message_id":%q}`, u2.ID), http.StatusOK)
+		fmt.Sprintf(`{"action":"rewind","message_id":%q,"mode":"chat"}`, u2.ID), http.StatusOK)
 	s3.wait(t, EvRewound)
 
 	after := h.session(sid).Hub().Snapshot()
@@ -682,7 +682,7 @@ func TestRewindRejectsUnknownMessagesAndActiveRuns(t *testing.T) {
 	h.setPolicy(sid, ModeAuto, 0)
 
 	// Unknown id, while still idle.
-	h.post("/api/sessions/"+sid+"/control", `{"action":"rewind","message_id":"u99"}`, http.StatusNotFound)
+	h.post("/api/sessions/"+sid+"/control", `{"action":"rewind","message_id":"u99","mode":"chat"}`, http.StatusNotFound)
 
 	s1 := h.start(sid, "run it")
 	defer s1.close()
@@ -692,13 +692,13 @@ func TestRewindRejectsUnknownMessagesAndActiveRuns(t *testing.T) {
 	// The run is in flight: rewinding under it would orphan the loop's
 	// appends, so it waits its turn with a 409.
 	h.post("/api/sessions/"+sid+"/control",
-		fmt.Sprintf(`{"action":"rewind","message_id":%q}`, uid), http.StatusConflict)
+		fmt.Sprintf(`{"action":"rewind","message_id":%q,"mode":"chat"}`, uid), http.StatusConflict)
 	s1.wait(t, EvRunEnd)
 
 	// Idle again, the same call forks away the only user message — the root
 	// case, where the fork point is the creation meta record.
 	h.post("/api/sessions/"+sid+"/control",
-		fmt.Sprintf(`{"action":"rewind","message_id":%q}`, uid), http.StatusOK)
+		fmt.Sprintf(`{"action":"rewind","message_id":%q,"mode":"chat"}`, uid), http.StatusOK)
 	if got := len(h.session(sid).Hub().Snapshot().Messages); got != 0 {
 		t.Errorf("after rewinding the only message: %d messages, want 0", got)
 	}
@@ -775,7 +775,7 @@ func TestRewindRestoresTheWorkspaceToTheCheckpoint(t *testing.T) {
 	// Now the rewind with files: the conversation forks and the workspace
 	// follows — x.txt back to v1, the file the abandoned run created gone.
 	h.post("/api/sessions/"+sid+"/control",
-		fmt.Sprintf(`{"action":"rewind","message_id":%q,"files":true}`, u2.ID), http.StatusOK)
+		fmt.Sprintf(`{"action":"rewind","message_id":%q,"mode":"both"}`, u2.ID), http.StatusOK)
 
 	if got := len(h.session(sid).Hub().Snapshot().Messages); got != 2 {
 		t.Errorf("messages = %d, want 2", got)
@@ -791,7 +791,7 @@ func TestRewindRestoresTheWorkspaceToTheCheckpoint(t *testing.T) {
 	// message without files leaves the workspace as restored.
 	u1 := h.session(sid).Hub().Snapshot().Messages[0]
 	h.post("/api/sessions/"+sid+"/control",
-		fmt.Sprintf(`{"action":"rewind","message_id":%q}`, u1.ID), http.StatusOK)
+		fmt.Sprintf(`{"action":"rewind","message_id":%q,"mode":"chat"}`, u1.ID), http.StatusOK)
 	if got, _ := os.ReadFile(filepath.Join(ws, "x.txt")); string(got) != "v1" {
 		t.Errorf("conversation-only rewind touched x.txt: %q", got)
 	}

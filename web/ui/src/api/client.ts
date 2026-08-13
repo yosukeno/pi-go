@@ -102,12 +102,22 @@ export const api = {
 
   // Rewind forks the transcript away from a user message: the message and
   // everything after it leave the branch, and the caller then refills the
-  // composer with the withdrawn text. files additionally restores the
-  // workspace to the checkpoint taken when the message was sent. 409 while a
-  // run is in flight, 404 when the timeline id is unknown, 422 when files
-  // were requested but no checkpoint exists for that point.
-  rewind: (sid: string, messageId: string, files: boolean) =>
-    control<{ rewound: boolean }>(sid, { action: "rewind", message_id: messageId, files }),
+  // composer with the withdrawn text.
+  //
+  // mode says what to act on: "chat" forks only, "files" restores the workspace
+  // to the checkpoint taken when the message was sent and leaves the conversation
+  // alone, "both" does both. paths narrows a file restore to a subset of what the
+  // preview listed; omit it for all of them.
+  //
+  // 409 while a run is in flight, 404 when the timeline id is unknown, 422 when
+  // files were asked for but no checkpoint exists for that point.
+  rewind: (sid: string, messageId: string, mode: "chat" | "files" | "both", paths?: string[]) =>
+    control<{ rewound: boolean }>(sid, {
+      action: "rewind",
+      message_id: messageId,
+      mode,
+      ...(paths && paths.length ? { paths } : {}),
+    }),
 
   // Replace the conversation with a summary of it. Costs one model call, so this
   // can take as long as a turn does; 409 means a run is in flight and 422 means

@@ -31,7 +31,7 @@ import { Icon } from "@iconify/vue";
 import { baseName, fileIcon, messageIcon, sessionIcon } from "@/components/fileIcons";
 import { useAgentStream } from "@/agent/useAgentStream";
 import { buildTimeline, formatDuration, parseSkillBlock } from "@/agent/timeline";
-import { invalidateTree } from "@/components/fileTreeStore";
+import { invalidateIndex, invalidateTree } from "@/components/fileTreeStore";
 import { migrateSheet, PANEL_PREFIX, SHEET_KEY, TENANT_KEY } from "@/components/dockSheets";
 import StarterCards from "@/components/StarterCards.vue";
 import FollowupChips from "@/components/FollowupChips.vue";
@@ -892,7 +892,11 @@ const rewindPreview = ref<{
   available: boolean;
   changes: { path: string; status: string; added: number; removed: number }[];
 } | null>(null);
-const rewindMode = ref<"both" | "chat">("both");
+const rewindMode = ref<"both" | "files" | "chat">("both");
+// Paths the user unticked, so they stay out of the restore. Tracking exclusions
+// rather than inclusions means a preview that lands late (or refreshes) has every
+// new file already selected, which is the safer default for a restore.
+const rewindExcluded = ref(new Set<string>());
 const rewindBusy = ref(false);
 
 const rewindOpen = computed({
@@ -906,10 +910,24 @@ const rewindOpen = computed({
 // change something. An empty diff offers conversation-only, like Claude Code.
 const rewindChanges = computed(() => (rewindPreview.value?.available ? rewindPreview.value.changes : []));
 
+// The paths a restore will actually touch. Empty array means "all of them", which
+// is what the API's absent `paths` means too, so the two agree by construction.
+const rewindSelected = computed(() =>
+  rewindChanges.value.map((c) => c.path).filter((p) => !rewindExcluded.value.has(p)),
+);
+
+function rewindToggle(path: string) {
+  const next = new Set(rewindExcluded.value);
+  if (next.has(path)) next.delete(path);
+  else next.add(path);
+  rewindExcluded.value = next;
+}
+
 function rewindAsk(item: { id: string; text: string }) {
   if (!current.value || busy.value) return;
   rewindMode.value = "both";
   rewindPreview.value = null;
+  rewindExcluded.value = new Set();
   rewindTarget.value = item;
   api
     .rewindPreview(current.value, item.id)
@@ -926,18 +944,31 @@ function rewindAsk(item: { id: string; text: string }) {
 async function confirmRewind() {
   const target = rewindTarget.value;
   if (!target || !current.value) return;
-  const files = rewindMode.value === "both" && rewindChanges.value.length > 0;
+  // With nothing to restore, the two file modes have no work to do; the dialog
+  // does not offer them in that case, but a stale preview must not send one.
+  const wantsFiles = rewindMode.value !== "chat" && rewindChanges.value.length > 0;
+  const mode = wantsFiles ? rewindMode.value : "chat";
   rewindBusy.value = true;
   try {
-    await api.rewind(current.value, target.id, files);
+    await api.rewind(current.value, target.id, mode, wantsFiles ? rewindSelected.value : undefined);
     rewindTarget.value = null;
+    if (mode === "files") {
+      // The transcript did not move, so there is no branch to reload and no
+      // withdrawn text to put back in the composer — reconnecting the stream
+      // here would be asking for a snapshot identical to the one on screen.
+      // Only the files changed, so only the file surfaces are invalidated.
+      invalidateTree();
+      invalidateIndex();
+      showFlash(t("agentView.flash.rewindFilesDone", { n: rewindSelected.value.length }), "info");
+      return;
+    }
     // open() early-returns on an unchanged sid, so the reload goes straight
     // through the stream: the snapshot that lands is the rewound branch.
     stream.connect(current.value);
     // The sidebar's count and title follow the live branch; the file tree
     // follows the restored workspace.
     await loadSessions();
-    if (files) invalidateTree();
+    if (wantsFiles) invalidateTree();
     editAsk(target.text);
   } catch (err) {
     const e = err as Error & { status?: number };
@@ -1397,10 +1428,26 @@ function rewindStatusLabel(status: string) {
             </span>
           </button>
 
-          <div v-if="rewindMode === 'both'" class="rw-files">
-            <div class="rw-files-head">{{ t("agentView.rewind.filesHead", { n: rewindChanges.length }) }}</div>
+          <div v-if="rewindMode !== 'chat'" class="rw-files">
+            <div class="rw-files-head">
+              {{ t("agentView.rewind.filesHead", { n: rewindSelected.length }) }}
+              <span class="rw-hint">{{ t("agentView.rewind.pickHint") }}</span>
+            </div>
             <div class="rw-files-list">
-              <div v-for="c in rewindChanges.slice(0, 30)" :key="c.path" class="rw-file">
+              <!-- Each row is a toggle, so a restore can be narrowed to one file
+                   without leaving this dialog. Exclusions are tracked, not
+                   inclusions: everything the preview lists starts selected, which
+                   is the answer that matches the button's label. -->
+              <button
+                v-for="c in rewindChanges.slice(0, 30)"
+                :key="c.path"
+                type="button"
+                class="rw-file"
+                :class="{ off: rewindExcluded.has(c.path) }"
+                :title="t('agentView.rewind.pickTitle')"
+                @click="rewindToggle(c.path)"
+              >
+                <span class="pick" :class="{ on: !rewindExcluded.has(c.path) }" aria-hidden="true" />
                 <Icon class="ficon" :icon="fileIcon(baseName(c.path))" />
                 <span class="st" :data-s="c.status">{{ rewindStatusLabel(c.status) }}</span>
                 <span class="p" :title="c.path">{{ c.path }}</span>
@@ -1411,13 +1458,24 @@ function rewindStatusLabel(status: string) {
                   </template>
                   <span v-else class="bin">{{ t("agentView.rewind.binary") }}</span>
                 </span>
-              </div>
+              </button>
               <div v-if="rewindChanges.length > 30" class="rw-more">
                 {{ t("agentView.rewind.moreFiles", { n: rewindChanges.length - 30 }) }}
               </div>
             </div>
             <p class="rw-warn">{{ t("agentView.rewind.warn") }}</p>
           </div>
+
+          <!-- The third mode. Not a weaker "both": the case it serves is a turn
+               whose reasoning was worth keeping and whose edit was not. Claude
+               Code's rewind menu and Roo's restore dialog both offer it. -->
+          <button class="rw-opt" :class="{ on: rewindMode === 'files' }" @click="rewindMode = 'files'">
+            <span class="rw-radio" />
+            <span class="rw-opttext">
+              <span class="rw-title">{{ t("agentView.rewind.filesTitle") }}</span>
+              <span class="rw-desc">{{ t("agentView.rewind.filesDesc") }}</span>
+            </span>
+          </button>
 
           <button class="rw-opt" :class="{ on: rewindMode === 'chat' }" @click="rewindMode = 'chat'">
             <span class="rw-radio" />
@@ -2501,11 +2559,19 @@ function rewindStatusLabel(status: string) {
 }
 
 .rw-files-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   padding: 6px 10px;
   font-size: 11px;
   color: var(--el-text-color-secondary);
   background: var(--el-fill-color-light);
   border-bottom: 1px solid var(--el-border-color-lighter);
+
+  .rw-hint {
+    margin-left: auto;
+    opacity: 0.75;
+  }
 }
 
 .rw-files-list {
@@ -2514,12 +2580,58 @@ function rewindStatusLabel(status: string) {
   padding: 4px 0;
 }
 
+/* A row is a toggle now, so the button defaults have to go: full width, left
+   aligned, no chrome — it has to keep reading as a list row. */
 .rw-file {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
   display: flex;
   align-items: center;
   gap: 7px;
   padding: 3px 10px;
   font-size: 12px;
+  color: inherit;
+
+  &:hover {
+    background: var(--el-fill-color-light);
+  }
+
+  /* Excluded: still listed, because "which files did I leave out" is a question
+     asked after the fact, and a row that vanished could not answer it. */
+  &.off {
+    opacity: 0.45;
+
+    .p {
+      text-decoration: line-through;
+    }
+  }
+
+  .pick {
+    flex: 0 0 auto;
+    width: 12px;
+    height: 12px;
+    border: 1px solid var(--el-border-color);
+    border-radius: 3px;
+    background: var(--el-bg-color);
+
+    &.on {
+      border-color: var(--el-color-danger);
+      background: var(--el-color-danger);
+      /* The tick, drawn rather than glyphed so it cannot pick up a font that
+         does not have it. */
+      background-image: linear-gradient(
+          to bottom right,
+          transparent 44%,
+          var(--el-bg-color) 44%,
+          var(--el-bg-color) 56%,
+          transparent 56%
+        ),
+        linear-gradient(to bottom left, transparent 62%, var(--el-bg-color) 62%, var(--el-bg-color) 74%, transparent 74%);
+    }
+  }
 
   .ficon {
     flex: 0 0 auto;

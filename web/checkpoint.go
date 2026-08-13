@@ -33,11 +33,32 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // errNoCheckpoint is Preview/Restore's not-found: the point predates
 // checkpointing, or its snapshot never landed.
 var errNoCheckpoint = errors.New("no checkpoint for that point")
+
+// errRewindMode is a request that named no valid mode. A sentinel rather than a
+// bare fmt.Errorf so the handler can map it to 400 by identity — matching on an
+// error's text is how a reworded message becomes a 500.
+var errRewindMode = errors.New("unknown rewind mode")
+
+// RewindMode is what a rewind acts on. The two halves — the conversation and the
+// work tree — are separately requestable because the two things a person wants to
+// undo are not always the same thing.
+type RewindMode string
+
+const (
+	// RewindChat forks the conversation and leaves the files alone.
+	RewindChat RewindMode = "chat"
+	// RewindFiles restores the files and leaves the conversation alone.
+	RewindFiles RewindMode = "files"
+	// RewindBoth does both, restore first, under one lock.
+	RewindBoth RewindMode = "both"
+)
 
 // errTooLarge declines to snapshot a work tree that would cost more disk than a
 // rewind is worth. It is a refusal, not a failure: the run continues without a
@@ -421,6 +442,57 @@ func (r *ShadowRepo) Restore(name string) error {
 	// ignoring them rather than deleting them outright.
 	_, err = r.git("clean", "-fd")
 	return err
+}
+
+// RestorePaths restores only the named paths from a checkpoint, leaving the rest
+// of the work tree alone. An empty list means the whole tree, which is Restore.
+//
+// This is a different operation from Restore, not a weaker one, and the
+// difference is the branch: Restore moves the shadow branch back so later
+// checkpoints fork from the restored state, mirroring the transcript's fork. A
+// partial restore forks nothing — the work tree ends up in a state no checkpoint
+// describes, which is exactly what "put this one file back" means. The next run's
+// checkpoint snapshots whatever is there, so nothing downstream needs the branch
+// to have moved.
+//
+// A path absent from the checkpoint was created after it, so restoring it means
+// removing it. That asymmetry is the same one Preview reports as status "A".
+func (r *ShadowRepo) RestorePaths(name string, rels []string) error {
+	if len(rels) == 0 {
+		return r.Restore(name)
+	}
+	commit, err := r.resolve(name)
+	if err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, raw := range rels {
+		// The project's own path guard, rather than a local check: one place
+		// decides what "inside the workspace" means, and a rewind is not the
+		// place to invent a second answer.
+		abs, err := tools.Resolve(r.root, raw)
+		if err != nil {
+			return fmt.Errorf("restore %s: %w", raw, err)
+		}
+		rel, err := filepath.Rel(r.root, abs)
+		if err != nil {
+			return fmt.Errorf("restore %s: %w", raw, err)
+		}
+		rel = filepath.ToSlash(rel)
+		// cat-file -e is the existence question asked of the commit, not of the
+		// disk: what matters is whether the checkpoint had this path.
+		if _, err := r.git("cat-file", "-e", commit+":"+rel); err != nil {
+			if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("restore %s: %w", rel, err)
+			}
+			continue
+		}
+		if _, err := r.git("checkout", commit, "--", rel); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // resolve maps a checkpoint name to its commit. Read-only, so it stays

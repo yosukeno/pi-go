@@ -531,6 +531,8 @@ journal 在第一次 `edit`/`write` 那个文件时记一份前像,之后重复�
 - checkpoint 用**run 开始那一刻 transcript 的 head 记录 id** 命名(`refs/checkpoints/<recordID>`)。而撤回的分叉点恰好就是这样一个记录 id——**这就是两棵树的连接键**:对话在 JSONL 里分叉,影子分支在这里分叉。
 - **checkpoint 的失败模式永远是「不可用」,绝不是「阻塞」。** 没有 git、目录不可写,run 照跑,只是那个点没有文件可恢复,撤回退化成只撤对话——也就是有 checkpoint 之前的行为。
 - **恢复会预览并询问,不猜。** 快照分不清「agent 改的」和「checkpoint 之后你自己改的」,所以对话框先列出会动哪些文件(git 的 name-status:`M` 恢复 / `D` 找回 / `A` 删除)和各自的增删行数,并明说**之后新建的文件会被删除、你手动的改动会被覆盖**。二进制文件报「二进制」而不是编一个行数。
+- **三档,而不是两档。** 「撤回对话并恢复文件」/「**只恢复文件,保留对话**」/「只恢复对话」。中间那一档服务的场景很具体:**这一轮的思路有用、但改动改坏了**——推理值得留在上下文里,产出不值得留在磁盘上。它不是第一档的弱化版,是另一件事。
+- **可以只恢复其中几个文件。** 受影响文件列表里每一行都是一个勾选,默认全选,点一行把它排除(灰掉 + 删除线,不消失——「我漏了哪几个」是事后才问的问题)。所以「只恢复这一个文件」就是取消勾选其余的。**主按钮仍然是唯一会动手的东西**:确认对话框不该在你按下确认之前就产生不可逆副作用。
 - **恢复先跑、分叉后跑,同一把锁**,所以撤回是全有或全无:恢复失败就完全不动对话,而且中间没有缝隙能让一次 run 挤进来。
 - `reset --hard` 不管未跟踪文件,但被放弃的那次 run 新建的文件正是未跟踪的——所以后面跟一个 `clean -fd`。**被 ignore 的路径留着**,那正是 ignore 它们而不是删掉的意义。
 
@@ -1822,6 +1824,8 @@ A few design decisions:
 - The checkpoint is named with **the transcript head record id at the moment the run started** (`refs/checkpoints/<recordID>`). And the forking point of a rewind happens to be exactly such a record id — **this is the join key between the two trees**: the conversation forks in the JSONL, the shadow branch forks here.
 - **The failure mode of a checkpoint is always "unavailable," never "blocking."** No git, directory not writable — the run goes ahead, there is just nothing to restore at that point, and rewind degrades to conversation-only — i.e., the behavior that existed before checkpoints.
 - **Restore previews and asks, it does not guess.** A snapshot cannot tell "what the agent changed" from "what you changed after the checkpoint," so the dialog first lists which files will move (git's name-status: `M` restore / `D` recover / `A` delete) and each one's line delta, and states clearly that **files created afterwards will be deleted and your manual edits will be overwritten**. Binary files report "binary" rather than a made-up line count.
+- **Three modes, not two.** "Rewind the chat and restore files" / "**restore files only, keep the chat**" / "rewind the chat only". The middle one serves a specific case: **the turn's reasoning was useful and its edit was not** — worth keeping in the context, not worth keeping on disk. It is not a weaker first option; it is a different operation.
+- **A restore can be narrowed to some of the files.** Every row in the affected-files list is a toggle, all selected by default; clicking one leaves it out (dimmed and struck through, not removed — "which ones did I leave out" is asked after the fact). So "restore just this one file" is "untick the others". **The main button is still the only thing that acts**: a confirm dialog should not produce irreversible side effects before you confirm.
 - **Restore runs first, fork runs after, under the same lock**, so rewind is all-or-nothing: a failed restore leaves the conversation completely untouched, and there is no gap for a run to slip into in between.
 - `reset --hard` ignores untracked files, but the files created by the abandoned run are exactly untracked — so a `clean -fd` follows. **Ignored paths are left alone**, which is the point of ignoring them rather than deleting them.
 

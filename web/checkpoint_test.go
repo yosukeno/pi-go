@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yosukeno/pi-go/llm"
 )
 
 func shadowHarness(t *testing.T) (*ShadowRepo, string) {
@@ -486,5 +488,166 @@ func TestGitSectionIsSilentWhenNotAskedFor(t *testing.T) {
 	h := filesHarness(t)
 	if got := h.mgr.gitSection(h.mgr.Cwd()); got != "" {
 		t.Errorf("gitSection() = %q, want empty with GitContext off", got)
+	}
+}
+
+// A partial restore is a different operation from a full one, and the difference
+// is what it leaves alone: the files not named, and the shadow branch.
+func TestRestorePathsTouchesOnlyWhatItIsGiven(t *testing.T) {
+	r, root := shadowHarness(t)
+	writeRootFile(t, root, "keep.txt", "v1")
+	writeRootFile(t, root, "other.txt", "v1")
+	writeRootFile(t, root, "gone.txt", "will be deleted")
+	if err := r.Checkpoint("rec1"); err != nil {
+		t.Fatal(err)
+	}
+
+	writeRootFile(t, root, "keep.txt", "v2")
+	writeRootFile(t, root, "other.txt", "v2")
+	if err := os.Remove(filepath.Join(root, "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	writeRootFile(t, root, "new.txt", "created after")
+
+	if err := r.RestorePaths("rec1", []string{"keep.txt", "gone.txt", "new.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRootFile(t, root, "keep.txt"); got != "v1" {
+		t.Errorf("named file = %q, want v1", got)
+	}
+	if got := readRootFile(t, root, "gone.txt"); got != "will be deleted" {
+		t.Errorf("named deleted file = %q, want it back", got)
+	}
+	// A path the checkpoint never had was created afterwards, so restoring it
+	// means removing it — the same asymmetry Preview reports as status "A".
+	if _, err := os.Stat(filepath.Join(root, "new.txt")); !os.IsNotExist(err) {
+		t.Error("a path absent from the checkpoint must be removed")
+	}
+	// The whole point: everything not named is left exactly as it was.
+	if got := readRootFile(t, root, "other.txt"); got != "v2" {
+		t.Errorf("unnamed file = %q, want it untouched at v2", got)
+	}
+}
+
+// An empty list means the whole tree, so the two entry points cannot disagree
+// about what "restore everything" does.
+func TestRestorePathsWithNoPathsIsAFullRestore(t *testing.T) {
+	r, root := shadowHarness(t)
+	writeRootFile(t, root, "a.txt", "v1")
+	if err := r.Checkpoint("rec1"); err != nil {
+		t.Fatal(err)
+	}
+	writeRootFile(t, root, "a.txt", "v2")
+	writeRootFile(t, root, "b.txt", "created after")
+
+	if err := r.RestorePaths("rec1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := readRootFile(t, root, "a.txt"); got != "v1" {
+		t.Errorf("a.txt = %q, want v1", got)
+	}
+	if _, err := os.Stat(filepath.Join(root, "b.txt")); !os.IsNotExist(err) {
+		t.Error("a full restore still cleans up files created afterwards")
+	}
+}
+
+// The path guard is the project's own, so a rewind cannot become a way to write
+// outside the workspace.
+func TestRestorePathsRefusesToEscapeTheWorkspace(t *testing.T) {
+	r, root := shadowHarness(t)
+	writeRootFile(t, root, "a.txt", "v1")
+	if err := r.Checkpoint("rec1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"../escape.txt", "/etc/passwd", ""} {
+		if err := r.RestorePaths("rec1", []string{bad}); err == nil {
+			t.Errorf("RestorePaths(%q) = nil, want a refusal", bad)
+		}
+	}
+}
+
+// An unknown mode is the client's mistake and must read as one. Checked through
+// HTTP because the status code is half the contract: a 500 here would send a
+// client looking for a server fault that is not there.
+func TestRewindRejectsAnUnknownMode(t *testing.T) {
+	h := filesHarness(t)
+	sid := h.createSession()
+	h.post("/api/sessions/"+sid+"/control",
+		`{"action":"rewind","message_id":"anything","mode":"everything"}`,
+		http.StatusBadRequest)
+	// An absent mode is the same mistake: a rewind is destructive, so there is
+	// deliberately no default half to guess at.
+	h.post("/api/sessions/"+sid+"/control",
+		`{"action":"rewind","message_id":"anything"}`,
+		http.StatusBadRequest)
+}
+
+// The third mode's whole claim: the files go back and the conversation does not
+// move. If the fork leaked into this path the message count would drop, and the
+// turn whose reasoning the user wanted to keep would be gone with it.
+//
+// The subset case rides along, because the two together are the feature: restore
+// one of the two files this turn wrote, keep the other, keep the chat.
+func TestRewindFilesOnlyLeavesTheConversationAlone(t *testing.T) {
+	writeTurn := func(path, content string) llm.Response {
+		return llm.Response{
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.Block{
+				{Type: llm.BlockToolUse, ID: "w_" + path, Name: "write",
+					Input: json.RawMessage(fmt.Sprintf(`{"path":%q,"content":%q}`, path, content))},
+			}},
+			StopReason: llm.StopToolUse,
+		}
+	}
+	h := newHarness(t, scriptedTurns(
+		textTurn("one"),
+		writeTurn("x.txt", "v2"),
+		writeTurn("y.txt", "v2"),
+		textTurn("two"),
+	))
+	sid := h.createSession()
+	h.setPolicy(sid, ModeAuto, 0)
+
+	ws := h.mgr.cfg.Cwd
+	for _, name := range []string{"x.txt", "y.txt"} {
+		if err := os.WriteFile(filepath.Join(ws, name), []byte("v1"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s1 := h.start(sid, "first")
+	s1.wait(t, EvRunEnd)
+	s1.close()
+	s2 := h.start(sid, "second")
+	s2.wait(t, EvRunEnd)
+	s2.close()
+
+	// The count is not asserted against a literal: a turn contributes more than
+	// one message and the exact number is the scripted turns' business, not this
+	// test's. What matters is that it does not change.
+	before := len(h.session(sid).Hub().Snapshot().Messages)
+	u2 := h.session(sid).Hub().Snapshot().Messages[2]
+
+	// Only x.txt is named, so only x.txt moves.
+	h.post("/api/sessions/"+sid+"/control",
+		fmt.Sprintf(`{"action":"rewind","message_id":%q,"mode":"files","paths":["x.txt"]}`, u2.ID),
+		http.StatusOK)
+
+	if got := len(h.session(sid).Hub().Snapshot().Messages); got != before {
+		t.Errorf("messages = %d, want %d: a files-only rewind must not fork", got, before)
+	}
+	if got, _ := os.ReadFile(filepath.Join(ws, "x.txt")); string(got) != "v1" {
+		t.Errorf("x.txt = %q, want v1 restored", got)
+	}
+	if got, _ := os.ReadFile(filepath.Join(ws, "y.txt")); string(got) != "v2" {
+		t.Errorf("y.txt = %q, want it left at v2: it was not named", got)
+	}
+
+	// The session is still usable afterwards — the agent's message list was not
+	// rebuilt, so the next run continues the same conversation.
+	s3 := h.start(sid, "third")
+	s3.wait(t, EvRunEnd)
+	s3.close()
+	if got := len(h.session(sid).Hub().Snapshot().Messages); got <= before {
+		t.Errorf("messages after another run = %d, want more than %d", got, before)
 	}
 }
