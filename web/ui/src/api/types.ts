@@ -567,6 +567,11 @@ export interface GitStatus {
   unstaged: number;
   untracked: number;
   conflicted: number;
+  // Up to 20 of the uncommitted paths, the deliberate exception to
+  // counts-not-paths: at session start they answer "which changes are not the
+  // agent's", which is a question numbers cannot answer. The bar does not render
+  // them — they exist for the prompt — but they are part of the response.
+  dirty_paths?: string[];
   // Why there is no answer, when the reason is neither "no repository" nor a
   // real state — no git binary, a timeout, a broken repository.
   unavailable?: string;

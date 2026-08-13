@@ -559,6 +559,10 @@ journal 在第一次 `edit`/`write` 那个文件时记一份前像,之后重复�
 - **`GIT_OPTIONAL_LOCKS=0` 不是优化**:`git status` 正常会占用索引锁,而这段代码跑的时候你可能正在同一个 checkout 里敲 git。一个会让你自己的提交失败的状态显示,比没有更糟。
 - **不主动 `git init`。** 非仓库时提示词里写明「说一次就够,不要在没被要求的情况下初始化仓库」。Codex 桌面端是提示你创建,它的 CLI 则是不在仓库里就拒绝启动——后者不抄:pi-go 的影子仓让非 git 目录照样能撤回,拦下来是自降能力。
 - `-no-git-context` 关掉**注入**,但不关**显示**:一个为了省 token 关掉注入的人,并没有要求从此看不见自己的分支。注入按会话探测一次(系统提示中途变化会让缓存前缀每轮失效),不是每轮。
+- **会话开始时已经脏的路径会被点名告诉模型**(上限 20 条 + 「另有 N 个」),附一句「这些不是你的,提交时不要暂存」。这是「报数量不报内容」的唯一例外,因为这条规则用数字表达不出来。它盖的是闸门盖不住的那个洞:`git add -A` 会把**你自己还没提交的工作**扫进 agent 的提交,而闸门给你看的是命令、不是它将要暂存的清单。按定义 agent 之后做的任何事都不可能加入这个集合,所以只在开始时探测一次。
+- **pi-go 不写你的仓库。** 提交由模型经 bash 发起,默认档 `standard` 只审 bash,所以**每一次 agent 提交你本来就已经在批准了**——再加一个提交端点只是换个入口、多一条写路径。
+- **不加 `Co-Authored-By` 之类的归属,这是决定不是遗漏。** 它在上游仍有争议(Claude Code 有两个仍开着的 issue 说这件事无法关闭、且永久改了用户历史),而且做错了清不掉(GitHub 的 contributor 图统计 co-author 且是缓存的,改写历史后 AI 仍然挂着);Linux 内核干脆禁止 AI 生成的提交信息。要归属的项目用 `commit.template` 或 hook 自己加——那是仓库的决定,不该由基座代做。
+- 基座提示词里多了一句通用纪律:**暂存你改过的路径而不是全部,不要用 `--no-verify` 绕过 hook,不要 amend / reset / force-push。** 它不依赖 git 事实,所以 `-no-git-context` 关掉之后依然生效。
 
 ### 会话侧栏:重命名与置顶
 
@@ -1852,6 +1856,10 @@ One line under the file panel's header: branch · `↑ahead ↓behind` · uncomm
 - **`GIT_OPTIONAL_LOCKS=0` is not an optimisation**: `git status` normally takes the index lock, and this runs while you may be running git in the same checkout. A status display that can make your own commit fail is worse than none.
 - **It does not run `git init`.** Outside a repository the prompt says to mention it once and not to initialise anything unasked. Codex's app offers to create one; its CLI refuses to start outside a repository — that half is not copied, because pi-go's shadow repo makes a non-git directory perfectly rewindable and refusing would be giving up a capability.
 - `-no-git-context` turns off the **injection**, not the **display**: someone who disabled it to save tokens has not asked to stop seeing their own branch. The injection is probed once per session (a system prompt that changes mid-session invalidates the cached prefix every turn), not per turn.
+- **Paths already dirty at session start are named to the model** (capped at 20 plus "and N more"), with one line saying what that means: these are not yours, do not stage them when committing. This is the single exception to counts-not-content, because the rule cannot be expressed in numbers. It closes the one hole the approval gate cannot: `git add -A` sweeps **your own unfinished work** into the agent's commit, and what the gate shows you is the command, not the list of what it will stage. By definition nothing the agent does later can join that set, so it is probed once, at the start.
+- **pi-go does not write to your repository.** Commits are made by the model through bash, and the default `standard` policy reviews bash — so **you are already approving every agent commit**. A commit endpoint would only move an existing capability to a new entrance and add a write path to protect.
+- **No `Co-Authored-By` attribution, and that is a decision rather than an omission.** It is still contested upstream (Claude Code has two open issues saying it cannot be turned off and permanently alters the user's history), and getting it wrong does not clean up (GitHub's contributor graph counts co-authors and is cached, so the AI lingers after a history rewrite); the Linux kernel bans AI-written commit messages outright. A project that wants attribution adds it with `commit.template` or a hook — that is the repository's decision, not the harness's.
+- The base prompt gained one line of generic discipline: **stage the paths you changed rather than everything, never bypass hooks with `--no-verify`, never rewrite history with amend, reset or force-push.** It depends on no git facts, so it survives `-no-git-context`.
 
 ### Session sidebar: rename and pin
 

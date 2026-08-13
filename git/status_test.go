@@ -1,6 +1,7 @@
 package git
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -286,5 +287,127 @@ func TestProbeNeverPanicsOnAMissingDirectory(t *testing.T) {
 	}
 	if got := s.PromptSection(); !strings.HasPrefix(got, "<git>") || !strings.HasSuffix(got, "</git>") {
 		t.Errorf("prompt section = %q, want a well-formed block even so", got)
+	}
+}
+
+// The paths exist for one rule, so the test is about that rule: what was already
+// uncommitted when the session started is not the agent's, and the prompt has to
+// name it. Counting cannot express that.
+func TestProbeNamesWhatWasAlreadyDirty(t *testing.T) {
+	dir := repo(t)
+	write(t, dir, "tracked.txt", "v1\n")
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "first")
+
+	write(t, dir, "tracked.txt", "v2\n") // unstaged
+	write(t, dir, "staged.txt", "new\n")
+	gitRun(t, dir, "add", "staged.txt")
+	write(t, dir, "untracked.txt", "x\n")
+
+	s := Probe(dir)
+	got := strings.Join(s.DirtyPaths, ",")
+	if want := "staged.txt,tracked.txt,untracked.txt"; got != want {
+		t.Errorf("DirtyPaths = %q, want %q (sorted, all three kinds)", got, want)
+	}
+	section := s.PromptSection()
+	for _, p := range []string{"staged.txt", "tracked.txt", "untracked.txt"} {
+		if !strings.Contains(section, p) {
+			t.Errorf("prompt section is missing %q:\n%s", p, section)
+		}
+	}
+	if !strings.Contains(section, "not yours") || !strings.Contains(section, "do not stage these") {
+		t.Errorf("prompt section must say what the list means:\n%s", section)
+	}
+}
+
+// A clean tree says nothing about pre-existing work, because there is none. The
+// paragraph appearing with an empty list would read as "and here are none of
+// them".
+func TestProbeSaysNothingAboutDirtyPathsWhenClean(t *testing.T) {
+	dir := repo(t)
+	write(t, dir, "a.txt", "v1\n")
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "first")
+
+	s := Probe(dir)
+	if len(s.DirtyPaths) != 0 {
+		t.Fatalf("DirtyPaths = %v, want none", s.DirtyPaths)
+	}
+	if got := s.PromptSection(); strings.Contains(got, "not yours") {
+		t.Errorf("prompt section = %q, want no pre-existing paragraph", got)
+	}
+}
+
+// Porcelain v2 does not quote or escape paths, so a filename with a space arrives
+// as the remainder of the line. Splitting on every space would truncate it, and a
+// truncated path in this list is worse than no path: it names a file that does not
+// exist while omitting one that does.
+func TestProbeKeepsPathsWithSpacesAndCJKIntact(t *testing.T) {
+	dir := repo(t)
+	write(t, dir, "a.txt", "v1\n")
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "first")
+
+	write(t, dir, "two words.txt", "x\n")
+	write(t, dir, "说明 文档.md", "x\n")
+	// A wholly untracked directory: git collapses it to the directory itself,
+	// which is the default this package keeps so its counts match what the user's
+	// own `git status` reports. For the rule these paths serve, a collapsed
+	// directory is still actionable — "do not stage 恶意代码/" is a usable
+	// instruction, and expanding it could mean thousands of lines.
+	write(t, dir, "恶意代码/样本.md", "x\n")
+
+	s := Probe(dir)
+	joined := strings.Join(s.DirtyPaths, "\n")
+	for _, want := range []string{"two words.txt", "说明 文档.md", "恶意代码/"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("DirtyPaths = %v, want it to contain %q", s.DirtyPaths, want)
+		}
+	}
+	// The octal escaping git does by default would show up here as backslashes.
+	if strings.Contains(joined, `\3`) {
+		t.Errorf("DirtyPaths = %v, want unescaped paths", s.DirtyPaths)
+	}
+}
+
+// A rename entry carries a similarity score before the path and the original path
+// after a tab. Only the new name is wanted, and the extra field must not shift the
+// parse.
+func TestProbeReadsRenamedPaths(t *testing.T) {
+	dir := repo(t)
+	write(t, dir, "old-name.txt", "v1\n")
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "first")
+	gitRun(t, dir, "mv", "old-name.txt", "new name.txt")
+
+	s := Probe(dir)
+	got := strings.Join(s.DirtyPaths, ",")
+	if got != "new name.txt" {
+		t.Errorf("DirtyPaths = %q, want just the new name", got)
+	}
+}
+
+// Bounded, and honest about being bounded: the total still has to be reachable or
+// "20 files" reads as the whole story.
+func TestProbeCapsTheDirtyPathListAndSaysSo(t *testing.T) {
+	dir := repo(t)
+	write(t, dir, "a.txt", "v1\n")
+	gitRun(t, dir, "add", "-A")
+	gitRun(t, dir, "commit", "-qm", "first")
+	for i := 0; i < maxDirtyPaths+5; i++ {
+		write(t, dir, fmt.Sprintf("f%02d.txt", i), "x\n")
+	}
+
+	s := Probe(dir)
+	if len(s.DirtyPaths) != maxDirtyPaths {
+		t.Errorf("DirtyPaths has %d entries, want the cap of %d", len(s.DirtyPaths), maxDirtyPaths)
+	}
+	section := s.PromptSection()
+	if !strings.Contains(section, "and 5 more") {
+		t.Errorf("prompt section must account for the remainder:\n%s", section)
+	}
+	// Still bounded overall: twenty short paths plus a header, not a thousand.
+	if lines := strings.Count(section, "\n"); lines > 30 {
+		t.Errorf("section has %d lines, want it bounded:\n%s", lines, section)
 	}
 }

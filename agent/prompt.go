@@ -31,7 +31,9 @@ changed in a sentence or two rather than restating the whole diff.
 
 A tool failure is information, not a dead end: read the error, adjust, retry.
 Do not delete files, reset version control, or touch anything outside the working
-directory unless the user asked for it.
+directory unless the user asked for it. If you commit, stage the paths you
+changed rather than everything, and never bypass hooks with --no-verify or
+rewrite history with amend, reset or force-push.
 `)
 	// Nothing here mentions the task list on purpose. That guidance lives in the
 	// todo tool's own description, which is loaded only when the tool is registered
