@@ -122,6 +122,9 @@ func main() {
 		pruneWorktrees = flag.Bool("worktrees-prune", false,
 			"Remove isolated worktrees that hold no work and no live lock, then exit."+
 				"\n清理没有未保存改动、也没有活进程占用的隔离 worktree 后退出")
+		pruneCheckpoints = flag.Bool("checkpoints-prune", false,
+			"Discard rewind points beyond the retention policy for this workspace, then exit."+
+				"\n清理本工作区超出保留策略的撤回点后退出")
 		listSkills = flag.Bool("skills", false,
 			"List discovered skills and exit.\n列出已发现的 skills 后退出")
 		noSkills = flag.Bool("no-skills", false,
@@ -219,6 +222,13 @@ func main() {
 	}
 	if *listWorktrees || *pruneWorktrees {
 		if err := worktreeCommand(os.Stdout, *cwd, *pruneWorktrees); err != nil {
+			fmt.Fprintf(os.Stderr, "pi-go: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if *pruneCheckpoints {
+		if err := checkpointCommand(os.Stdout, *cwd); err != nil {
 			fmt.Fprintf(os.Stderr, "pi-go: %v\n", err)
 			os.Exit(1)
 		}

@@ -1,11 +1,14 @@
 package web
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 func shadowHarness(t *testing.T) (*ShadowRepo, string) {
@@ -276,5 +279,174 @@ func TestFileChangeSortsForStablePreviews(t *testing.T) {
 	sort.Slice(changes, func(i, j int) bool { return changes[i].Path < changes[j].Path })
 	if changes[0].Path != "a.txt" {
 		t.Errorf("got %v", changes)
+	}
+}
+
+// The budget is the only guard against a workspace whose bulk has no name the
+// noise list could have known: a vendored toolchain, a downloaded dataset. It
+// must refuse before writing the objects, and it must refuse in a way the next
+// run can recover from on its own.
+func TestCheckpointDeclinesAnOversizedWorkTree(t *testing.T) {
+	r, root := shadowHarness(t)
+	r.maxBytes = 4 << 10
+
+	writeRootFile(t, root, "src/main.go", "package main")
+	writeRootFile(t, root, "vendor/blob.bin", strings.Repeat("x", 16<<10))
+
+	err := r.Checkpoint("rec1")
+	if !errors.Is(err, errTooLarge) {
+		t.Fatalf("Checkpoint() = %v, want errTooLarge", err)
+	}
+	// The diagnostic has to name what to exclude; a number alone leaves the
+	// person with nothing to act on.
+	if !strings.Contains(err.Error(), "vendor/") {
+		t.Errorf("error must name the biggest offender, got %q", err)
+	}
+	if _, ok := r.Preview("rec1"); ok {
+		t.Error("a declined checkpoint must not leave a restore point behind")
+	}
+}
+
+// Refusing is not the same as giving up: git decides what would be staged, so an
+// oversized directory the project already ignores must not cost anything. This
+// is why the budget asks git instead of walking the tree itself.
+func TestCheckpointBudgetRespectsGitignore(t *testing.T) {
+	r, root := shadowHarness(t)
+	r.maxBytes = 4 << 10
+
+	writeRootFile(t, root, ".gitignore", "vendor/\n")
+	writeRootFile(t, root, "src/main.go", "package main")
+	writeRootFile(t, root, "vendor/blob.bin", strings.Repeat("x", 16<<10))
+
+	if err := r.Checkpoint("rec1"); err != nil {
+		t.Fatalf("Checkpoint() = %v, want the ignored bulk not to count", err)
+	}
+	changes, ok := r.Preview("rec1")
+	if !ok {
+		t.Fatal("preview says there is no checkpoint")
+	}
+	for _, c := range changes {
+		if strings.HasPrefix(c.Path, "vendor/") {
+			t.Errorf("ignored path %q must stay out of the snapshot", c.Path)
+		}
+	}
+}
+
+// A nested repository's metadata is not the outer project's content, and
+// snapshotting it would put a second .git under our own add -A. Its working
+// files are still tracked: they are files in this tree like any other, and the
+// alternative — disabling checkpointing entirely, which some agents do — trades
+// a whole feature for an edge case.
+func TestNestedGitDirIsExcluded(t *testing.T) {
+	r, root := shadowHarness(t)
+	writeRootFile(t, root, "sub/.git/HEAD", "ref: refs/heads/main")
+	writeRootFile(t, root, "sub/app.go", "package app")
+
+	if err := r.Checkpoint("rec1"); err != nil {
+		t.Fatal(err)
+	}
+	out, err := r.git("ls-tree", "-r", "--name-only", "refs/checkpoints/rec1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, ".git/") {
+		t.Errorf("a nested .git must not be snapshotted, tree:\n%s", out)
+	}
+	if !strings.Contains(out, "sub/app.go") {
+		t.Errorf("the nested repository's files must still be tracked, tree:\n%s", out)
+	}
+}
+
+// Every checkpoint commit parents the one before it, so deleting refs alone
+// frees nothing — the branch keeps the whole chain reachable. This is the test
+// that would fail if Prune stopped rewriting the survivors.
+func TestPruneDropsOldPointsAndReclaimsTheDisk(t *testing.T) {
+	r, root := shadowHarness(t)
+	// Distinct, incompressible-enough content per point, so each one owns
+	// objects that only it references.
+	for i := 0; i < 6; i++ {
+		writeRootFile(t, root, "big.bin", strings.Repeat(string(rune('a'+i)), 256<<10))
+		if err := r.Checkpoint(fmt.Sprintf("rec%d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	res, err := r.Prune(2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Removed != 4 || res.Kept != 2 {
+		t.Errorf("Prune() removed %d kept %d, want 4 and 2", res.Removed, res.Kept)
+	}
+	if res.AfterKiB >= res.BeforeKiB {
+		t.Errorf("store %dKiB -> %dKiB: pruning must actually free objects",
+			res.BeforeKiB, res.AfterKiB)
+	}
+	// The discarded points are gone as restore points...
+	for i := 0; i < 4; i++ {
+		if _, ok := r.Preview(fmt.Sprintf("rec%d", i)); ok {
+			t.Errorf("rec%d must be gone after the prune", i)
+		}
+	}
+	// ...and the kept ones still restore, under the same names, despite their
+	// commit ids having been rewritten.
+	if err := r.Restore("rec4"); err != nil {
+		t.Fatalf("Restore(rec4) after prune = %v", err)
+	}
+	if got := readRootFile(t, root, "big.bin"); got != strings.Repeat("e", 256<<10) {
+		t.Errorf("restored content is not what rec4 held (len %d)", len(got))
+	}
+}
+
+// The age rule and the count rule are separate policies; with a count that keeps
+// everything, age alone must still collect.
+func TestPruneDropsPointsPastTheMaxAge(t *testing.T) {
+	r, root := shadowHarness(t)
+	writeRootFile(t, root, "f.txt", "one")
+	if err := r.Checkpoint("rec1"); err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Prune(0, -1) // every point is already older than "now minus a negative age"
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Removed != 0 {
+		t.Fatalf("a non-positive maxAge must disable the age rule, removed %d", res.Removed)
+	}
+
+	res, err = r.Prune(0, time.Nanosecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Removed != 1 || res.Kept != 0 {
+		t.Errorf("Prune(0, 1ns) removed %d kept %d, want 1 and 0", res.Removed, res.Kept)
+	}
+	// Emptying the store must leave a repository the next run can commit into.
+	writeRootFile(t, root, "f.txt", "two")
+	if err := r.Checkpoint("rec2"); err != nil {
+		t.Fatalf("Checkpoint after a full prune = %v", err)
+	}
+	if _, ok := r.Preview("rec2"); !ok {
+		t.Error("the run after a full prune must still get a restore point")
+	}
+}
+
+// Nothing to prune is an answer, not an error: a workspace may simply never have
+// been checkpointed, and the command still has to say where it looked.
+func TestPruneCheckpointsWithoutAStore(t *testing.T) {
+	sessionDir, cwd := t.TempDir(), t.TempDir()
+	var out strings.Builder
+	if err := PruneCheckpoints(&out, sessionDir, cwd, 100, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "no checkpoints") {
+		t.Errorf("output = %q, want it to say there are none", out.String())
+	}
+	if !strings.Contains(out.String(), CheckpointDir(sessionDir, cwd)) {
+		t.Errorf("output = %q, want the location it looked in", out.String())
+	}
+	// Reporting must not create the store it just said was absent.
+	if _, err := os.Stat(CheckpointDir(sessionDir, cwd)); !os.IsNotExist(err) {
+		t.Error("a report must not create the shadow repository")
 	}
 }

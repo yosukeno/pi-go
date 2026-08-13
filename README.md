@@ -151,12 +151,13 @@ echo "解释 Go 的 defer 执行时机" | pi-go
 | `-project-memory` | 同时使用 `./.pi-go/memory`，默认关闭 |
 | `-worktrees` | 列出本仓库的隔离 worktree 并退出 |
 | `-worktrees-prune` | 清理没有未保存改动、也没有活进程占用的隔离 worktree 并退出 |
+| `-checkpoints-prune` | 清理本工作区超出保留策略的撤回点并退出 |
 | `-web` | 启动浏览器界面（见下节） |
 | `-listen <addr>` | `-web` 的监听地址，默认 `127.0.0.1:7777` |
 | `-gate-timeout <dur>` | 工具调用等待人工审批的时长，默认 5m，超时按拒绝处理 |
 | `-context-edit <auto\|off\|n>` | prompt 超过这个大小就丢弃旧的工具输出，默认 `auto`（模型窗口的五分之四）。见「上下文清理」 |
 | `-web-dev <url>` | 把非 API 路由反代到 vite 开发服务器 |
-| `-web-panel <名称=url>` | 把一个外部 web 应用挂进 dock 作为 sheet 显示，可重复；应用被反代到 `/panels/<名称>/`，与页面同源（见「浏览器界面」） |
+| `-web-panel <名称=url>` | 把一个外部 web 应用挂进 dock 的面板容器，可重复；应用被反代到 `/panels/<名称>/`，与页面同源（见「浏览器界面」） |
 
 ## 给程序读的输出：`-mode json`
 
@@ -415,7 +416,38 @@ cd ../.. && go build -o pi-go .
 
 开发时用 `pi-go -web -web-dev http://localhost:5173`（另一个终端 `cd web/ui && npm run dev`）：浏览器只跟 Go 服务器打交道，非 API 路由被反代给 vite，所以单一 origin、token 照常工作，HMR 也能用。
 
-**外部面板：`-web-panel 名称=url`（可重复）。** 右侧 dock 是一个 sheet 容器——文件、Shell、每个注册的外部面板各占一个 sheet，由常显的图标栏切换。外部应用经 `/panels/<名称>/` 反代接入（与页面同源，不开 CORS），恶意代码分析平台这类场景应用不用改 pi-go 就能挂进来。只注册你信任的后端：面板与页面同源，和 `-skill` 一样是运营者的显式决定。
+**外部面板：`-web-panel 名称=url`（可重复）。** 外部应用经 `/panels/<名称>/` 反代接入（与页面同源，不开 CORS），恶意代码分析平台这类场景应用不用改 pi-go 就能挂进来。只注册你信任的后端：面板与页面同源，和 `-skill` 一样是运营者的显式决定。
+
+右侧 dock 的图标栏**固定两颗**：**文件**（工作区）和**面板**。后者是一个容器，Shell 和每个注册的 `-web-panel` 都是它的住户，由标题栏左侧的下拉切换——注册再多面板也不会让图标栏变长。标题栏还有最大化（临时占满宽度，不持久化）和右侧/底部布局切换。
+
+面板可以把一句话递给对话区（比如详情页上的「问 agent 这个样本」），用的是 MCP Apps 的 `ui/message`（JSON-RPC over postMessage）：
+
+```js
+window.parent.postMessage({
+  jsonrpc: "2.0", method: "ui/message",
+  params: { role: "user", content: { type: "text", text: "分析这个样本" } },
+}, window.location.origin)
+```
+
+pi-go 会校验来源 origin 与发送方 iframe，然后把文本**填进输入框**——面板永远不会代你发送。
+
+**空态引导：skill 目录下的 `starters.json`（可选）。** 空对话上的引导卡片和每轮结束后的下一步 chips 都由它提供，pi-go 只负责渲染与校验，不含任何领域内容；没有这个文件时空态保持原来那行提示。改完刷新页面即生效（每请求重读）。
+
+```json
+{
+  "heading": "今天要做什么？",
+  "send": false,
+  "cards": [
+    { "icon": "search", "title": "找一个样本", "label": "零检出", "prompt": "…" },
+    { "icon": "graph", "title": "看聚簇图", "panel": "样本库", "at": "#/clusters" }
+  ],
+  "followups": [
+    { "when": ["mal-decompile"], "chips": [{ "title": "生成 Yara 规则", "prompt": "…" }] }
+  ]
+}
+```
+
+一张卡片只能有一个动作：`prompt`（填进输入框）或 `panel`（打开面板，可带 `at` hash 路由）。`send: true` 让 `prompt` 卡片点击即发送，默认是填入。`followups` 的 `when` 匹配**最后一轮**的工具调用与回复，没命中就不显示。`icon` 取自固定白名单（`search` `code` `shield` `graph` `file` `terminal` `spark` `book`）。不合法的卡片会在 stderr 上说明原因并跳过。
 
 三件事值得知道：
 
@@ -500,6 +532,16 @@ journal 在第一次 `edit`/`write` 那个文件时记一份前像,之后重复�
 - **恢复会预览并询问,不猜。** 快照分不清「agent 改的」和「checkpoint 之后你自己改的」,所以对话框先列出会动哪些文件(git 的 name-status:`M` 恢复 / `D` 找回 / `A` 删除)和各自的增删行数,并明说**之后新建的文件会被删除、你手动的改动会被覆盖**。二进制文件报「二进制」而不是编一个行数。
 - **恢复先跑、分叉后跑,同一把锁**,所以撤回是全有或全无:恢复失败就完全不动对话,而且中间没有缝隙能让一次 run 挤进来。
 - `reset --hard` 不管未跟踪文件,但被放弃的那次 run 新建的文件正是未跟踪的——所以后面跟一个 `clean -fd`。**被 ignore 的路径留着**,那正是 ignore 它们而不是删掉的意义。
+
+#### 快照要有预算,撤回点要有保留期
+
+每次 run 开始都打一次快照、而且一直留着,所以这两件事都是无界的:一次快照可以有多大、总共留多少个。
+
+- **体积预算**:超过 512MiB 新增内容(或 2 万个新文件)的工作树**不打快照**,run 照跑,stderr 上说明是哪几个目录最大。判断交给 `git ls-files --others --exclude-standard` 而不是自己走目录树,因为只有 git 知道 `add -A` 到底会 stage 什么——你的 `.gitignore`、每一层嵌套的 `.gitignore`、还有影子仓自己的 `info/exclude`。自己走一遍的版本会因为一个 2GB 的构建目录关掉 checkpoint,而那个目录 git 本来就要 ignore。**这是拒绝,不是故障**:下一次 run 会重新判断,所以补一条 `.gitignore` 就好了,不用重启。
+- **噪声清单**是 quick open 那份(`indexSkip`)的超集:多出来的是包管理器目录和工具缓存(`.venv`/`__pycache__`/`.gradle`/`.terraform` 等)。**`build/` 和 `target/` 故意不在里面**——它们在有些项目里是手写源码,而猜错的代价是静默的:一次撤回跳过了一个没人被告知的文件。名字只在「这个名字永远不是源码」时才配进清单,剩下的交给上面那条体积预算。
+- **保留策略**:100 个撤回点或 30 天,先到先算,`-checkpoints-prune` 执行。做成命令而不是后台定时清扫,和 `-worktrees-prune` 同一个理由:pi-go 没有常驻进程,定时清扫意味着在一次无关的 run 里删掉别人的撤回点。在这之前答案是「永不清理」——影子仓会随着工作区被使用一直长。
+- **清理必须重写幸存的撤回点**,否则一个字节都不会释放:每个 checkpoint 提交都以前一个为父,分支把整条链拴在一起,删掉旧 ref 之后新提交仍然把它列为祖先。所以 prune 会在同样的 tree 上重建一条新链——**ref 名不变,commit id 变**——然后 `gc` 才真的能丢掉只有被删除的点引用过的对象。改 id 是安全的,因为和 transcript 的连接键是 ref **名**:预览和恢复每次都重新解析这个名字。
+- **排序不能用提交时间**。git 时间戳只有秒精度,几次快速的 run 会带着同一个时间,`--sort=-committerdate` 于是静默退化成按 ref 名排序——保留 `rec0`、`rec1` 而丢掉 `rec4`、`rec5`,正好是保留策略的反面。真正的顺序是提交链本身,所以用 `rev-list --all --topo-order` 拿一次全序。
 
 ### 会话侧栏:重命名与置顶
 
@@ -1389,12 +1431,13 @@ Note: piped input **always triggers one-shot mode** and never enters the REPL. O
 | `-project-memory` | Also use `./.pi-go/memory`; off by default |
 | `-worktrees` | List isolated worktrees of this repo and exit |
 | `-worktrees-prune` | Clean up isolated worktrees with no unsaved changes and no live process holding them; exit |
+| `-checkpoints-prune` | Discard this workspace's rewind points beyond the retention policy; exit |
 | `-web` | Launch the browser UI (see section below) |
 | `-listen <addr>` | Listen address for `-web`; default `127.0.0.1:7777` |
 | `-gate-timeout <dur>` | How long a tool call waits for human approval; default 5m, timeout is treated as denied |
 | `-context-edit <auto\|off\|n>` | Discard older tool output once the prompt exceeds this size; default `auto` (four-fifths of the model window). See "Context cleaning" |
 | `-web-dev <url>` | Reverse-proxy non-API routes to a vite dev server |
-| `-web-panel <name=url>` | Show an external web app as a dock sheet (repeatable); reverse-proxied at `/panels/<name>/`, same origin as the page |
+| `-web-panel <name=url>` | Show an external web app in the dock's panel container (repeatable); reverse-proxied at `/panels/<name>/`, same origin as the page |
 
 ## JSON Output: `-mode json`
 
@@ -1649,7 +1692,38 @@ cd ../.. && go build -o pi-go .
 
 For development use `pi-go -web -web-dev http://localhost:5173` (in another terminal `cd web/ui && npm run dev`): the browser only talks to the Go server, non-API routes are reverse-proxied to vite, so single origin, the token still works, and HMR is usable.
 
-**External panels: `-web-panel name=url` (repeatable).** The right dock is a sheet container — files, the shell, and each registered panel are sheets switched by an always-visible icon rail. Panel apps are reverse-proxied at `/panels/<name>/` (same origin as the page, no CORS), so scenario applications plug in without touching pi-go. Register only backends you trust: panels share the page's origin, and like `-skill` the flag is an explicit operator decision.
+**External panels: `-web-panel name=url` (repeatable).** Panel apps are reverse-proxied at `/panels/<name>/` (same origin as the page, no CORS), so scenario applications plug in without touching pi-go. Register only backends you trust: panels share the page's origin, and like `-skill` the flag is an explicit operator decision.
+
+The right dock's rail is **fixed at two buttons**: **files** (the workspace) and **panel**. The latter is a container whose tenants are the shell and every registered `-web-panel`, switched from a dropdown in its header — registering more panels never grows the rail. The header also carries maximize (fills the width temporarily, not persisted) and the right/bottom layout toggle.
+
+A panel can hand a line to the conversation (a "ask the agent about this" button, say) using MCP Apps' `ui/message` (JSON-RPC over postMessage):
+
+```js
+window.parent.postMessage({
+  jsonrpc: "2.0", method: "ui/message",
+  params: { role: "user", content: { type: "text", text: "analyse this sample" } },
+}, window.location.origin)
+```
+
+pi-go validates the origin and the sending iframe, then **fills the composer**. A panel never sends for you.
+
+**Empty-state starters: `starters.json` in a skill directory (optional).** It supplies the cards on an empty conversation and the next-step chips after a turn. pi-go only renders and validates them — no domain content of its own — and without the file the empty state keeps its original one-line hint. Edits take effect on reload (the file is read per request).
+
+```json
+{
+  "heading": "What are we doing today?",
+  "send": false,
+  "cards": [
+    { "icon": "search", "title": "Find a sample", "label": "zero detections", "prompt": "…" },
+    { "icon": "graph", "title": "Open the cluster graph", "panel": "样本库", "at": "#/clusters" }
+  ],
+  "followups": [
+    { "when": ["mal-decompile"], "chips": [{ "title": "Write a Yara rule", "prompt": "…" }] }
+  ]
+}
+```
+
+A card carries exactly one action: `prompt` (fill the composer) or `panel` (open that panel, optionally at an `at` hash route). `send: true` makes a prompt card go out on click; the default is to fill. A follow-up group's `when` is matched against what the **last turn** did — its tool calls and its reply — and no match shows nothing. `icon` comes from a fixed set (`search` `code` `shield` `graph` `file` `terminal` `spark` `book`). Invalid cards are skipped with the reason on stderr.
 
 Three things worth knowing:
 
@@ -1734,6 +1808,16 @@ A few design decisions:
 - **Restore previews and asks, it does not guess.** A snapshot cannot tell "what the agent changed" from "what you changed after the checkpoint," so the dialog first lists which files will move (git's name-status: `M` restore / `D` recover / `A` delete) and each one's line delta, and states clearly that **files created afterwards will be deleted and your manual edits will be overwritten**. Binary files report "binary" rather than a made-up line count.
 - **Restore runs first, fork runs after, under the same lock**, so rewind is all-or-nothing: a failed restore leaves the conversation completely untouched, and there is no gap for a run to slip into in between.
 - `reset --hard` ignores untracked files, but the files created by the abandoned run are exactly untracked — so a `clean -fd` follows. **Ignored paths are left alone**, which is the point of ignoring them rather than deleting them.
+
+#### Snapshots need a budget, rewind points need a retention period
+
+A snapshot is taken at every run start and kept, so both of those are otherwise unbounded: how big one snapshot may be, and how many are kept.
+
+- **Size budget**: a work tree with more than 512MiB of new content (or 20,000 new files) is **not snapshotted**; the run goes ahead and stderr names the largest directories. The decision is delegated to `git ls-files --others --exclude-standard` rather than a hand-rolled walk, because git is the only thing that knows what `add -A` would actually stage: your `.gitignore`, every nested one below it, and the shadow repo's own `info/exclude`. A hand-rolled walk would disable checkpointing over a 2GB build directory git was going to ignore anyway. **This is a refusal, not a failure**: the next run decides again, so adding a `.gitignore` line fixes it without a restart.
+- **The noise list** is a superset of quick open's (`indexSkip`); what it adds is package-manager directories and tool caches (`.venv`, `__pycache__`, `.gradle`, `.terraform`, and so on). **`build/` and `target/` are deliberately absent** — both are hand-written source in some projects, and the cost of guessing wrong is silent: a rewind that skips a file nobody was told about. A name earns a place on that list only when the name is never source; the rest is the size budget's job.
+- **Retention**: 100 rewind points or 30 days, whichever runs out first, applied by `-checkpoints-prune`. A command rather than a background sweep, for the same reason `-worktrees-prune` is one: pi-go has no daemon, so a timed sweep would mean deleting someone's rewind points from inside an unrelated run. Before this the answer was "never" — a workspace's shadow repo grew for as long as the workspace was worked in.
+- **Pruning has to rewrite the survivors** or it frees nothing: every checkpoint commit parents the one before it, so the branch keeps the whole chain reachable and a newer commit still lists a deleted ref's commit as an ancestor. Prune therefore rebuilds a fresh chain over the same trees — **same ref names, new commit ids** — and only then can `gc` drop the objects that only the discarded points referenced. Rewriting ids is safe because the join key with the transcript is the ref **name**: preview and restore resolve it every time.
+- **Ordering cannot come from commit dates.** Git timestamps have one-second resolution, so a handful of quick runs share one date and `--sort=-committerdate` silently falls back to sorting by ref name — keeping `rec0` and `rec1` while discarding `rec4` and `rec5`, the exact opposite of a retention policy. The real order is the commit chain, so a single `rev-list --all --topo-order` provides the total order.
 
 ### Session sidebar: rename and pin
 

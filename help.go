@@ -16,7 +16,7 @@ var flagOrder = []string{
 	"p", "model", "models", "sessions", "C", "resume", "mode", "quiet",
 	"max-turns", "soft-turns", "max-runs", "evaluate", "retries",
 	"skills", "skill", "no-skills", "project-skills",
-	"worktrees", "worktrees-prune",
+	"worktrees", "worktrees-prune", "checkpoints-prune",
 	"web", "listen", "web-dev", "gate-timeout",
 }
 
