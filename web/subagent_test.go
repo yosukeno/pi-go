@@ -131,6 +131,59 @@ func TestApprovalBudgetArithmetic(t *testing.T) {
 	if err := CheckApprovalBudget(0, 5*time.Minute, 2); err != nil {
 		t.Errorf("an unbounded run timeout was rejected: %v", err)
 	}
+	// The ceiling under the shipped timeouts, which is what a deployment raising
+	// PIGO_SUBAGENT_CONCURRENCY runs into: 15m + 3x5m is exactly 30m, and one more
+	// child is one too many. Pinned because it is the number a Dockerfile has to
+	// pick, and it is not obvious from either constant on its own.
+	if err := CheckApprovalBudget(30*time.Minute, 5*time.Minute, 3); err != nil {
+		t.Errorf("3 concurrent subagents was rejected under the shipped timeouts: %v", err)
+	}
+	if err := CheckApprovalBudget(30*time.Minute, 5*time.Minute, 4); err == nil {
+		t.Error("4 concurrent subagents was accepted; 15m + 4*5m exceeds a 30m run")
+	}
+}
+
+// Raising the concurrency raises the approval time the children can hold between
+// them, so the budget has to be checked against the configured number and not
+// against the constant. Otherwise the setting would sail past startup and the
+// symptom would appear much later, as runs dying of their own deadline.
+func TestManagerChecksTheBudgetAgainstTheConfiguredConcurrency(t *testing.T) {
+	t.Setenv("KIMI_API_KEY", "test-key")
+	base := Config{
+		Cwd: t.TempDir(), SessionDir: t.TempDir(), Model: "k3",
+		RunTimeout: 30 * time.Minute, GateTimeout: 5 * time.Minute,
+	}
+	t.Setenv(tools.EnvConcurrency, "4")
+	if _, err := NewManager(base); err == nil {
+		t.Error("NewManager accepted 4 subagents with a 5m gate and a 30m run")
+	} else if !strings.Contains(err.Error(), "4 subagent(s)") {
+		t.Errorf("error = %v, want it to name the configured count", err)
+	}
+	// And a value that does fit still starts, so the check is not simply refusing
+	// every override.
+	t.Setenv(tools.EnvConcurrency, "3")
+	m, err := NewManager(base)
+	if err != nil {
+		t.Fatalf("NewManager with 3 subagents: %v", err)
+	}
+	defer m.Close()
+	if m.subagentConcurrency != 3 {
+		t.Errorf("subagentConcurrency = %d, want 3", m.subagentConcurrency)
+	}
+}
+
+// A bad isolation value has to stop the server rather than fall back quietly: an
+// operator who typed it believes children share the workspace, and would find
+// commits instead.
+func TestManagerRefusesAnUnknownIsolation(t *testing.T) {
+	t.Setenv(tools.EnvIsolation, "shard")
+	_, err := NewManager(Config{Cwd: t.TempDir(), SessionDir: t.TempDir()})
+	if err == nil {
+		t.Fatal("NewManager accepted an unknown isolation mode")
+	}
+	if !strings.Contains(err.Error(), tools.IsolationShared) {
+		t.Errorf("error = %v, want it to name the mode that was meant", err)
+	}
 }
 
 // answerFirstGate waits for a pending approval to appear and answers it.

@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -44,6 +46,38 @@ func TestGuardRefusesTheWaysOutOfAWorktree(t *testing.T) {
 		if !strings.Contains(err.Error(), "refused:") {
 			t.Errorf("Check(%q) = %v, want the refused command quoted back", cmd, err)
 		}
+	}
+}
+
+// Under shared isolation the ban is unchanged and the reason is not: there is no
+// worktree and nothing is committed for the child, so the default wording would
+// tell it to expect a commit that never arrives. It would then report success on
+// work it believes was recorded.
+//
+// The check that the mode did not weaken anything is the first assertion here. If
+// anything the ban matters more in this mode — a stray `git commit` lands in the
+// user's own repository, on their branch, mixed into their uncommitted work.
+func TestGuardRefusesGitWithATrueReasonWhenShared(t *testing.T) {
+	shared := &Guard{Worktree: "/home/me/proj", Shared: true}
+	err := shared.Check("git commit -am wip")
+	if err == nil {
+		t.Fatal("Check(git commit) = nil under shared isolation, want the same refusal")
+	}
+	for _, want := range []string{"git is not available", "already in place", "refused:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Check = %v, missing %q", err, want)
+		}
+	}
+	// The promise that does not hold here.
+	for _, wrong := range []string{"isolated worktree", "committed for you"} {
+		if strings.Contains(err.Error(), wrong) {
+			t.Errorf("Check = %v, repeats %q, which is false under shared isolation", err, wrong)
+		}
+	}
+	// And the default keeps saying the thing that is true there.
+	if e := (&Guard{Worktree: "/wt/sub1"}).Check("git commit -am wip"); e == nil ||
+		!strings.Contains(e.Error(), "committed for you") {
+		t.Errorf("worktree guard = %v, want it to still promise the commit", e)
 	}
 }
 
@@ -97,6 +131,67 @@ func TestBashRefusesGuardedCommandsBeforeRunning(t *testing.T) {
 	// Refused before anything ran, so there is no exit code and no output to show.
 	if res.Details != nil {
 		t.Errorf("Details = %+v, want nothing recorded for a command that never ran", res.Details)
+	}
+}
+
+// bash's workdir parameter reaches the same place a `cd` does, without appearing in
+// the command text the guard parses. So adding it without this check would have
+// handed a subagent a way out of its worktree that reads as an ordinary argument —
+// which is the whole reason CheckDir exists, and why this test runs the tool rather
+// than calling the guard directly.
+func TestBashWorkdirCannotLeaveTheWorktree(t *testing.T) {
+	wt := t.TempDir()
+	main := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(main, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inside := filepath.Join(wt, "pkg")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b := &Bash{Cwd: wt, Guard: &Guard{Worktree: wt, MainCheckout: main}}
+
+	for _, c := range []struct {
+		workdir string
+		want    string
+	}{
+		// The escape the `cd` check would have caught in the command text.
+		{os.TempDir(), "outside your worktree"},
+		{"..", "outside your worktree"},
+		// And the one it would not: naming the repository the worktree came from.
+		{main, "main checkout"},
+		{filepath.Join(main, "src"), "main checkout"},
+	} {
+		res, err := b.Execute(context.Background(), args(t, map[string]any{
+			"command": "pwd", "workdir": c.workdir,
+		}))
+		if err == nil {
+			t.Errorf("workdir %q was accepted", c.workdir)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("workdir %q: error = %v, want it to mention %q", c.workdir, err, c.want)
+		}
+		if res.Details != nil {
+			t.Errorf("workdir %q: Details = %+v, want nothing for a refused call", c.workdir, res.Details)
+		}
+	}
+
+	// The work the parameter is for still goes through: a directory inside the
+	// child's own worktree.
+	if _, err := b.Execute(context.Background(), args(t, map[string]any{
+		"command": "pwd", "workdir": "pkg",
+	})); err != nil {
+		t.Errorf("a workdir inside the worktree was refused: %v", err)
+	}
+
+	// And a top-level session is unrestricted, which is the documented existing
+	// behaviour of bash and must not change because a guarded path grew a check.
+	plain := &Bash{Cwd: wt}
+	if _, err := plain.Execute(context.Background(), args(t, map[string]any{
+		"command": "pwd", "workdir": main,
+	})); err != nil {
+		t.Errorf("unguarded bash refused a workdir outside its cwd: %v", err)
 	}
 }
 

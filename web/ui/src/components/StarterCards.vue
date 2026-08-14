@@ -66,14 +66,19 @@ function iconFor(name?: string) {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 14px;
-  padding: 32px 16px 8px;
+  gap: 18px;
+  padding: 56px 16px 8px;
 }
 
+/* The one line of type in this UI allowed to be large. It is the only screen with
+   no content of its own to compete with, and a 15px sentence floating in an empty
+   column reads as a placeholder rather than a welcome. */
 .heading {
   margin: 0;
-  font-size: 15px;
-  color: var(--el-text-color-regular);
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  color: var(--el-text-color-primary);
   text-align: center;
 }
 
@@ -92,24 +97,30 @@ function iconFor(name?: string) {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
-  min-height: 76px;
-  padding: 10px 12px;
+  gap: 6px;
+  min-height: 82px;
+  padding: 12px 14px;
   text-align: left;
-  border: 1px solid var(--el-border-color);
-  border-radius: 10px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 12px;
   background: var(--el-bg-color);
   cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
 
+  /* Lifts rather than only tinting: these are the only cards in the app that are
+     entirely a click target, and the movement is what says so. */
   &:hover {
-    border-color: var(--el-color-primary);
-    background: var(--el-fill-color-lighter);
+    border-color: var(--pg-accent-line);
+    box-shadow: var(--el-box-shadow-light);
+    transform: translateY(-1px);
   }
 
-  &:focus-visible {
-    outline: 2px solid var(--el-color-primary);
-    outline-offset: 1px;
+  &:active {
+    transform: translateY(0);
   }
 }
 
@@ -119,7 +130,8 @@ function iconFor(name?: string) {
 
 .card-title {
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 550;
+  line-height: 1.45;
   color: var(--el-text-color-primary);
 }
 

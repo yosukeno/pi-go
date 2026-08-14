@@ -406,3 +406,58 @@ func TestAnalyzeCountsEachStatsRecordOnce(t *testing.T) {
 		t.Errorf("max input = %d, want 200", stats.TokenUsage.MaxInput)
 	}
 }
+
+// The batch report has to answer whether batching bought anything, not just whether
+// it happened. A batch of three that contains one sequential tool runs one call at a
+// time — see agent.parallelBatch — so the two parallel-capable calls in it were
+// serialized for a reason that had nothing to do with them, and that is the number a
+// finer-grained batch rule would be worth.
+func TestBatchReportNamesTheStalledCalls(t *testing.T) {
+	lines := []string{
+		`{"id":"r0","type":"meta","time":1000,"meta":{"cwd":"/w","model":"glm-5.2"}}`,
+		// A mixed batch: two reads held up by one bash.
+		`{"id":"r1","parentId":"r0","type":"message","time":1100,"message":{"role":"assistant",` +
+			`"content":[{"type":"tool_use","name":"read"},{"type":"tool_use","name":"bash"},` +
+			`{"type":"tool_use","name":"read"}]}}`,
+		// An all-parallel batch: nothing is stalled.
+		`{"id":"r2","parentId":"r1","type":"message","time":1200,"message":{"role":"assistant",` +
+			`"content":[{"type":"tool_use","name":"read"},{"type":"tool_use","name":"grep"}]}}`,
+		// A lone bash has nothing to hold up, however sequential it is.
+		`{"id":"r3","parentId":"r2","type":"message","time":1300,"message":{"role":"assistant",` +
+			`"content":[{"type":"tool_use","name":"bash"}]}}`,
+	}
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stats, err := AnalyzeSession(path, Config{})
+	if err != nil {
+		t.Fatalf("AnalyzeSession: %v", err)
+	}
+	b := stats.BatchSizes
+
+	if b.Stalled != 2 {
+		t.Errorf("Stalled = %d, want 2 (the two reads behind bash)", b.Stalled)
+	}
+	if got, want := b.TotalCalls, 6; got != want {
+		t.Errorf("TotalCalls = %d, want %d", got, want)
+	}
+	// 6 calls over 3 tool-calling turns.
+	if got, want := b.AverageCalls, 2.0; got != want {
+		t.Errorf("AverageCalls = %v, want %v", got, want)
+	}
+	// Names sorted, so the emission order of the mixed batch does not split it into
+	// its own entry.
+	for combo, want := range map[string]int{"bash+read+read": 1, "grep+read": 1, "bash": 1} {
+		if got := b.Combos[combo]; got != want {
+			t.Errorf("Combos[%q] = %d, want %d (got %v)", combo, got, want, b.Combos)
+		}
+	}
+
+	// The text report has to carry the number too: a field nobody prints is a field
+	// nobody acts on.
+	if out := FormatText(stats); !strings.Contains(out, "Serialized by a sequential sibling: 2") {
+		t.Errorf("FormatText omits the stalled count:\n%s", out)
+	}
+}

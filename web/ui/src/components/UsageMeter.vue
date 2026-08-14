@@ -133,18 +133,18 @@ const hint = computed(() =>
   align-items: center;
   gap: 6px;
   height: 30px;
-  padding: 0 10px;
+  padding: 0 11px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   font-size: 12px;
-  color: #000;
+  color: var(--el-text-color-primary);
   cursor: pointer;
   transition: background 0.15s;
 
   .el-icon {
     font-size: 16px;
-    color: #000;
+    color: var(--el-text-color-primary);
   }
 
   &:hover {
@@ -160,7 +160,7 @@ const hint = computed(() =>
 .pair {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
-  color: #000;
+  color: var(--el-text-color-primary);
 }
 
 /* teleported=false, so the popper is reachable from scoped styles via :deep. */

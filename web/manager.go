@@ -21,6 +21,7 @@ import (
 	"github.com/yosukeno/pi-go/session"
 	"github.com/yosukeno/pi-go/skills"
 	"github.com/yosukeno/pi-go/tools"
+	"github.com/yosukeno/pi-go/worktree"
 )
 
 // Timeouts that replace "the client hung up" as the way a run ends.
@@ -112,6 +113,13 @@ type Manager struct {
 	// conversation-only, which is what it was before checkpoints existed.
 	shadow *ShadowRepo
 
+	// Subagent settings, resolved once from the environment in NewManager so that a
+	// bad value is a startup error and every session of this server agrees. Reading
+	// them per session would let a variable changed under a long-lived server give
+	// two sessions different isolation with nothing recording which got which.
+	isolation           string
+	subagentConcurrency int
+
 	mu       sync.Mutex
 	sessions map[string]*Session
 	closed   bool
@@ -149,7 +157,21 @@ func NewManager(cfg Config) (*Manager, error) {
 	// missing key should not look like a broken UI. The same reasoning covers a
 	// timeout configuration that cannot hold — see CheckApprovalBudget for why that
 	// one is otherwise invisible.
-	if err := CheckApprovalBudget(cfg.RunTimeout, cfg.GateTimeout, tools.DefaultSubagentConcurrency); err != nil {
+	isolation, err := tools.IsolationFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	concurrency, err := tools.ConcurrencyFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if concurrency <= 0 {
+		concurrency = tools.DefaultSubagentConcurrency
+	}
+	// Checked against the configured concurrency, not the constant: raising the
+	// number of children raises the approval time they can hold between them, and
+	// that is precisely the inequality this function exists to state.
+	if err := CheckApprovalBudget(cfg.RunTimeout, cfg.GateTimeout, concurrency); err != nil {
 		return nil, err
 	}
 	if _, err := config.Resolve(cfg.Model); err != nil {
@@ -157,14 +179,16 @@ func NewManager(cfg Config) (*Manager, error) {
 	}
 
 	m := &Manager{
-		cfg:          cfg,
-		skillRoots:   skills.Roots(cfg.Skills),
-		memoryRoots:  cfg.Memory.Roots(),
-		skillSection: skills.PromptSection(cfg.Skills),
-		skillNames:   skills.Names(cfg.Skills),
-		journal:      tools.NewDirJournal(filepath.Join(cfg.SessionDir, "journal", journalDirKey(cfg.Cwd)), cfg.Cwd),
-		sessions:     make(map[string]*Session),
-		stop:         make(chan struct{}),
+		cfg:                 cfg,
+		isolation:           isolation,
+		subagentConcurrency: concurrency,
+		skillRoots:          skills.Roots(cfg.Skills),
+		memoryRoots:         cfg.Memory.Roots(),
+		skillSection:        skills.PromptSection(cfg.Skills),
+		skillNames:          skills.Names(cfg.Skills),
+		journal:             tools.NewDirJournal(filepath.Join(cfg.SessionDir, "journal", journalDirKey(cfg.Cwd)), cfg.Cwd),
+		sessions:            make(map[string]*Session),
+		stop:                make(chan struct{}),
 	}
 	// The shadow repo sits next to the journal. Failure (no git, an
 	// unwritable dir) turns checkpointing off, not the server: rewind still
@@ -488,11 +512,20 @@ func (m *Manager) newSession(store *session.Store, cfg config.Resolved, history 
 				// MaxTurns is deliberately not inherited: see Subagent.MaxTurns. This
 				// session's turn limit bounds this session's run.
 				Cwd: cwd, Model: cfg.Model,
+				// Both were validated when the server started — NewManager refuses a
+				// bad value — so these cannot fail in a way a session could report.
+				Isolation:   m.isolation,
+				Concurrency: m.subagentConcurrency,
 				// An explore child may be configured onto a different model than this
 				// session's. Resolved from cfg rather than the manager's default, so
 				// that switching models mid-session moves the subagent with it.
 				ExploreModel: config.SubagentModel(cfg.Model),
 				ExplorePool:  explorePool(),
+				// Asked once per session, here, where the workspace is known. A
+				// browser session can be pointed at any directory the workspace
+				// picker offers, so this is per session and not per process. See
+				// Subagent.ExploreOnly.
+				ExploreOnly: !worktree.Available(cwd),
 				// The child's calls come back through the same gate the user is
 				// already watching, marked with the subagent they came from. Passing
 				// the gate rather than a copy of the policy is what makes "a

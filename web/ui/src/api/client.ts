@@ -18,6 +18,8 @@ import type {
 // The token arrives as a query parameter on the URL the server prints at
 // startup. It is kept in sessionStorage so a reload without the query string
 // still works, and mirrored back into the URL so the tab can be duplicated.
+// When it is absent or rejected, boot stops at the token gate (TokenGate.vue),
+// whose submit is the only other writer — via setToken below.
 const TOKEN_KEY = "pi-go-token";
 
 function readToken(): string {
@@ -37,6 +39,17 @@ export function authHeaders(): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+// The token gate's way in: write the token everywhere readToken looks, then
+// the caller reloads the page — `token` above is fixed at import time.
+export function setToken(value: string) {
+  // Guarded like readToken so unit tests can import this module.
+  if (typeof location === "undefined") return;
+  sessionStorage.setItem(TOKEN_KEY, value);
+  const url = new URL(location.href);
+  url.searchParams.set("token", value);
+  history.replaceState(null, "", url);
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
@@ -48,9 +61,18 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   });
   if (res.status === 204) return undefined as T;
   const text = await res.text();
-  const data = text ? JSON.parse(text) : undefined;
+  // Error bodies are not promised to be JSON — the auth middleware's 401 is
+  // plain text — so a parse failure must not become the message the user sees.
+  let data: { error?: string } | undefined;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = undefined;
+    }
+  }
   if (!res.ok) {
-    const message = data?.error ?? `HTTP ${res.status}`;
+    const message = data?.error ?? (text || `HTTP ${res.status}`);
     throw Object.assign(new Error(message), { status: res.status });
   }
   return data as T;

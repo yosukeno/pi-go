@@ -295,6 +295,47 @@ func TestExactCommandGrantDoesNotGeneralise(t *testing.T) {
 	}
 }
 
+// bash grew a workdir parameter, and the grant has to notice. Before it existed,
+// "always allow `go build ./...`" could only mean "in the session's directory";
+// keying on the command alone would silently promote that same click to "in any
+// directory the agent names", which the user was never shown.
+func TestCommandGrantDoesNotSpanWorkdirs(t *testing.T) {
+	p := NewPolicy()
+	// The grant a user makes by approving the bare form, as the gate stores it.
+	p.AllowCommand(grantKeyOf(json.RawMessage(`{"command":"go build ./..."}`)))
+
+	bare := agent.GateRequest{ToolName: "bash", Args: json.RawMessage(`{"command":"go build ./..."}`)}
+	if _, auto := p.Decide(bare); !auto {
+		t.Error("the granted form was not allowed")
+	}
+	elsewhere := agent.GateRequest{ToolName: "bash", Args: json.RawMessage(`{"command":"go build ./...","workdir":"/etc"}`)}
+	if _, auto := p.Decide(elsewhere); auto {
+		t.Error("the same command in another directory was allowed by a grant made for the default one")
+	}
+
+	// And the other direction: a grant for one directory does not cover the default.
+	q := NewPolicy()
+	q.AllowCommand(grantKeyOf(json.RawMessage(`{"command":"make","workdir":"sub"}`)))
+	if _, auto := q.Decide(agent.GateRequest{
+		ToolName: "bash", Args: json.RawMessage(`{"command":"make","workdir":"sub"}`),
+	}); !auto {
+		t.Error("the granted directory form was not allowed")
+	}
+	if _, auto := q.Decide(agent.GateRequest{
+		ToolName: "bash", Args: json.RawMessage(`{"command":"make"}`),
+	}); auto {
+		t.Error("a grant made for one directory covered the default one")
+	}
+
+	// An empty workdir is the default, not a third thing: the two spellings of "run
+	// it here" must share one grant, or a model that starts passing "" would silently
+	// stop hitting every grant the user has made.
+	if grantKeyOf(json.RawMessage(`{"command":"make","workdir":""}`)) !=
+		grantKeyOf(json.RawMessage(`{"command":"make"}`)) {
+		t.Error(`workdir:"" and an absent workdir produced different grant keys`)
+	}
+}
+
 func TestDangerPatternsAreDetected(t *testing.T) {
 	req := agent.GateRequest{ToolName: "bash", Args: json.RawMessage(`{"command":"rm -rf ./build"}`)}
 	if hits := Danger(req); len(hits) == 0 {

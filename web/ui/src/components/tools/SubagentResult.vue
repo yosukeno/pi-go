@@ -72,6 +72,25 @@ const model = computed(() => props.details?.model ?? (props.frames ?? []).find((
 
 const failed = computed(() => props.result?.is_error === true);
 
+/**
+ * neverStarted is a failure that happened before the child process existed:
+ * a refused mode, a depth cap, no worktree to put it in.
+ *
+ * It needs its own state because the ordinary "0 turns · 0 tools / no events yet"
+ * is a lie about it. Those two lines describe a child that ran and produced
+ * nothing, which is a real and different outcome — a model that burned its run
+ * looping, say — and the reader's next move is not the same in the two cases.
+ * A failure with no session id, no frames and no result details is the pre-spawn
+ * one: every path that reaches the child records at least the session header.
+ */
+const neverStarted = computed(
+  () =>
+    failed.value &&
+    (props.frames ?? []).length === 0 &&
+    !childSession.value &&
+    !props.details?.turns,
+);
+
 // Turns and tools are the two numbers that say what a delegation did; the run's
 // own count wins once it exists, because frame capping can drop early turn rows.
 const stepTurns = computed(() => steps.value.filter((s) => s.kind === "turn").length);
@@ -138,7 +157,10 @@ watch(
       <span v-if="model" class="chip dim">{{ model }}</span>
       <span v-if="details?.tampered" class="chip bad">{{ t("subagentResult.tampered") }}</span>
       <span v-else-if="details?.commit" class="chip ok">{{ t("subagentResult.committed") }}</span>
-      <span class="count">{{ t("subagentResult.stats", { turns: details?.turns ?? stepTurns, tools: toolCount }) }}</span>
+      <!-- The turn/tool counts are suppressed rather than shown as zeroes: see
+           neverStarted. Zero of each reads as "it ran and did nothing". -->
+      <span v-if="neverStarted" class="count">{{ t("subagentResult.neverStarted") }}</span>
+      <span v-else class="count">{{ t("subagentResult.stats", { turns: details?.turns ?? stepTurns, tools: toolCount }) }}</span>
     </div>
 
     <!-- Collapsed: the newest event, scrolled to. Not a summary and not nothing —
@@ -151,6 +173,13 @@ watch(
         <span v-else-if="latest.detail" class="detail">{{ latest.detail }}</span>
       </div>
       <div v-else-if="running" class="step muted">{{ t("subagentResult.starting") }}</div>
+      <!-- Collapsed, a never-started card shows the reason instead of "Done".
+           There is no progress to follow and the reason is short by construction —
+           it is a refusal, not a transcript — so it is the useful line here. -->
+      <div v-else-if="neverStarted" class="step bad">
+        <span class="kind">—</span>
+        <span class="label">{{ result?.text }}</span>
+      </div>
       <div v-else-if="result" class="step muted">{{ t("subagentResult.done") }}</div>
     </div>
 
@@ -202,7 +231,11 @@ watch(
             <span v-if="s.detail" class="detail">{{ s.detail }}</span>
           </div>
         </template>
-        <div v-if="!steps.length" class="step muted">{{ t("subagentResult.noEvents") }}</div>
+        <!-- "No events yet" is for a child that is starting up. A child that never
+             started has no events and never will, so the line would be waiting for
+             something that is not coming. -->
+        <div v-if="!steps.length && !neverStarted" class="step muted">{{ t("subagentResult.noEvents") }}</div>
+        <div v-else-if="!steps.length" class="step muted">{{ t("subagentResult.neverStartedHint") }}</div>
       </div>
 
       <!-- The answer, once there is one. This is the only part that entered the

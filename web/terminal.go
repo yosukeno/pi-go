@@ -7,10 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/yosukeno/pi-go/tools"
 	"nhooyr.io/websocket"
 	"nhooyr.io/websocket/wsjson"
 )
@@ -253,12 +253,11 @@ func (t *Terminal) Kill() {
 		c.Close(websocket.StatusGoingAway, "session closed")
 	}
 	_ = t.ptm.Close()
-	if t.cmd.Process != nil {
-		// Kill the group: a shell's children (the dev server it launched) are
-		// its process group, and reaping the leader alone orphans them.
-		_ = syscall.Kill(-t.cmd.Process.Pid, syscall.SIGKILL)
-		_ = t.cmd.Process.Kill()
-	}
+	// Kill the group: a shell's children (the dev server it launched) are its
+	// process group, and reaping the leader alone orphans them. Borrowed from
+	// tools rather than repeated here, because the platform split this needs
+	// already lives there and two copies would drift.
+	_ = tools.KillGroup(t.cmd)
 	select {
 	case <-t.done:
 	case <-time.After(2 * time.Second):

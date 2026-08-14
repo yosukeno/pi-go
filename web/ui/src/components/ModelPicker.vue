@@ -98,11 +98,11 @@ const subagentModel = computed(
   align-items: center;
   gap: 5px;
   height: 30px;
-  padding: 0 10px;
+  padding: 0 11px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
-  font: 600 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+  font: 600 13px var(--pg-mono);
   color: var(--el-text-color-primary);
   cursor: pointer;
   transition: background 0.15s;

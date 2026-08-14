@@ -391,6 +391,89 @@ func TestBashSuccessDetails(t *testing.T) {
 	}
 }
 
+// workdir is the alternative to a `cd` prefix, so the thing to pin is that it
+// actually changes where the process starts — in both spellings, since a relative
+// path resolving against the wrong base is the failure mode that produces a
+// plausible wrong answer instead of an error.
+func TestBashWorkdirRunsTheCommandThere(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "nested", "deeper")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b := &Bash{Cwd: dir}
+
+	for _, spelling := range []string{filepath.Join("nested", "deeper"), sub} {
+		res, err := b.Execute(context.Background(), args(t, map[string]any{
+			"command": "pwd", "workdir": spelling,
+		}))
+		if err != nil {
+			t.Fatalf("workdir %q: %v", spelling, err)
+		}
+		if !strings.Contains(res.Text, "deeper") {
+			t.Errorf("workdir %q: pwd = %q, want it inside the nested directory", spelling, res.Text)
+		}
+		// Recorded as the resolved absolute path, so the card and the transcript name
+		// one directory rather than whichever spelling the model happened to use.
+		if d := res.Details.(BashDetails); d.Workdir != sub {
+			t.Errorf("workdir %q: Details.Workdir = %q, want %q", spelling, d.Workdir, sub)
+		}
+	}
+
+	// Omitted, and explicitly ".", both mean the session's directory — and neither
+	// records a workdir, because a card announcing the default on every call says
+	// nothing.
+	for _, spelling := range []any{nil, "", "."} {
+		a := map[string]any{"command": "pwd"}
+		if spelling != nil {
+			a["workdir"] = spelling
+		}
+		res, err := b.Execute(context.Background(), args(t, a))
+		if err != nil {
+			t.Fatalf("workdir %v: %v", spelling, err)
+		}
+		if d := res.Details.(BashDetails); d.Workdir != "" {
+			t.Errorf("workdir %v: Details.Workdir = %q, want it left empty", spelling, d.Workdir)
+		}
+	}
+}
+
+// A bad workdir must be answered by the tool, not by bash failing to start. The
+// difference matters to the model: `chdir: no such file or directory` with exit code
+// -1 describes the harness, while a message naming the resolved path and the base it
+// was resolved against describes the mistake.
+func TestBashWorkdirFailuresAreExplained(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "notadir.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := &Bash{Cwd: dir}
+
+	res, err := b.Execute(context.Background(), args(t, map[string]any{
+		"command": "pwd", "workdir": "nope",
+	}))
+	if err == nil {
+		t.Fatal("a nonexistent workdir was accepted")
+	}
+	for _, want := range []string{"does not exist", "nope", dir} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, missing %q", err, want)
+		}
+	}
+	// Refused before anything ran, so there is nothing to report — same contract the
+	// guard refusal holds to.
+	if res.Details != nil {
+		t.Errorf("Details = %+v, want nothing recorded for a command that never ran", res.Details)
+	}
+
+	if _, err := b.Execute(context.Background(), args(t, map[string]any{
+		"command": "pwd", "workdir": "notadir.txt",
+	})); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("workdir pointing at a file = %v, want it to say so", err)
+	}
+}
+
 func TestBashRespectsCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -472,6 +555,71 @@ func TestConcurrentEditsToSameFileDoNotLoseUpdates(t *testing.T) {
 	}
 	if got, want := read(t, path), "ALPHA\nbeta\ngamma\nDELTA\n"; got != want {
 		t.Errorf("content = %q, want %q: an update was lost", got, want)
+	}
+}
+
+// A read of a file a sibling call is rewriting must return the whole file — the
+// old content or the new one — and never a prefix of either.
+//
+// os.WriteFile truncates before it writes, so there is a window in which the file
+// on disk is genuinely shorter than both versions. read used to skip the per-path
+// lock on the grounds that it does not mutate anything, which covered two writers
+// racing each other and left a reader racing a writer wide open. The failure is
+// silent: a truncated file is a valid short file, so the model gets a plausible
+// answer from content that never existed.
+//
+// This test has teeth — verified by removing the lock from Read.Execute, which
+// fails it within the first handful of iterations on a partial read.
+func TestReadNeverObservesAHalfWrittenFile(t *testing.T) {
+	dir := t.TempDir()
+	// Wide enough that truncate-then-write is observably not atomic, and inside
+	// both truncation limits so a clean read is comparable byte for byte.
+	const lines = 800
+	old := strings.Repeat(strings.Repeat("x", 39)+"\n", lines)
+	newer := strings.Repeat(strings.Repeat("y", 39)+"\n", lines)
+	write(t, dir, "f.txt", old)
+
+	r := &Read{Cwd: dir}
+	w := &Write{Cwd: dir}
+	// Built on this goroutine: args calls t.Fatal on bad input, which a helper
+	// goroutine may not do.
+	readArgs := args(t, map[string]any{"path": "f.txt"})
+	writeArgs := [2]json.RawMessage{
+		args(t, map[string]any{"path": "f.txt", "content": old}),
+		args(t, map[string]any{"path": "f.txt", "content": newer}),
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, _ = w.Execute(context.Background(), writeArgs[i%2])
+		}
+	}()
+
+	var failure string
+	for i := 0; i < 300 && failure == ""; i++ {
+		res, err := r.Execute(context.Background(), readArgs)
+		switch {
+		case err != nil:
+			failure = fmt.Sprintf("read %d failed: %v", i, err)
+		case res.Text != old && res.Text != newer:
+			failure = fmt.Sprintf("read %d saw %d bytes, want the whole file (%d): a write was observed mid-truncation",
+				i, len(res.Text), len(old))
+		}
+	}
+	close(stop)
+	wg.Wait()
+
+	if failure != "" {
+		t.Error(failure)
 	}
 }
 
@@ -598,5 +746,245 @@ func TestFileToolSchemasPutPathFirst(t *testing.T) {
 				t.Errorf("%s: %s precedes \"path\" on the wire: %s", tool.Name(), other, raw)
 			}
 		}
+	}
+}
+
+// --- multi-file read ---
+
+// Several paths in one call is one round trip instead of one per file, which is the
+// whole reason the parameter exists. The contents have to arrive attributed, in the
+// order asked, and under one shared budget rather than one budget each.
+func TestReadManyReturnsEveryFileAttributed(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "a.go", "package a\n")
+	write(t, dir, "b.go", "package b\n")
+	write(t, dir, "sub/c.go", "package c\n")
+	r := &Read{Cwd: dir}
+
+	res, err := r.Execute(context.Background(), args(t, map[string]any{
+		"paths": []string{"a.go", "b.go", "sub/c.go"},
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	for _, want := range []string{"==> a.go <==", "package a", "==> b.go <==", "package b",
+		"==> sub/c.go <==", "package c"} {
+		if !strings.Contains(res.Text, want) {
+			t.Errorf("output is missing %q:\n%s", want, res.Text)
+		}
+	}
+	// Order as asked, not as the filesystem or a map felt like.
+	if a, b := strings.Index(res.Text, "==> a.go <=="), strings.Index(res.Text, "==> b.go <=="); a > b {
+		t.Error("files came back out of the order they were asked for")
+	}
+	d, ok := res.Details.(ReadManyDetails)
+	if !ok {
+		t.Fatalf("Details = %T, want ReadManyDetails", res.Details)
+	}
+	if len(d.Files) != 3 {
+		t.Fatalf("Details has %d files, want 3", len(d.Files))
+	}
+	// Not ReadDetails, deliberately: the web UI discriminates on total_lines and its
+	// single-file component cannot draw this. See ReadManyDetails.
+	if _, wrong := res.Details.(ReadDetails); wrong {
+		t.Error("a multi-file read must not report single-file ReadDetails")
+	}
+}
+
+// The recorded byte ranges are what lets an interface show each file separately
+// without parsing the concatenated text back apart, so this asserts the property the
+// reader relies on: slicing Text at the range yields that file's content and nothing
+// else. Non-ASCII content is in the fixture because the offsets are bytes, and a
+// reader that treats them as character indices is wrong in a way a plain ASCII
+// fixture would never reveal.
+func TestReadManyRecordsWhereEachBodyIs(t *testing.T) {
+	dir := t.TempDir()
+	bodies := map[string]string{
+		// A body that contains what looks like another file's section header: the
+		// case that rules out splitting the text on the headers instead.
+		"doc.md":   "example:\n==> b.go <==\nnot really b\n",
+		"b.go":     "package b\n",
+		"cjk.go":   "// 中文注释\npackage cjk\n",
+		"emoji.md": "done ✅ 🎉\n",
+	}
+	order := []string{"doc.md", "b.go", "cjk.go", "emoji.md"}
+	for _, p := range order {
+		write(t, dir, p, bodies[p])
+	}
+	r := &Read{Cwd: dir}
+
+	res, err := r.Execute(context.Background(), args(t, map[string]any{"paths": order}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	d := res.Details.(ReadManyDetails)
+	if len(d.Files) != len(order) {
+		t.Fatalf("Details has %d files, want %d", len(d.Files), len(order))
+	}
+	for _, f := range d.Files {
+		if f.BodyOffset <= 0 || f.BodyLength <= 0 {
+			t.Errorf("%s: BodyOffset=%d BodyLength=%d, want a real range", f.Path, f.BodyOffset, f.BodyLength)
+			continue
+		}
+		end := f.BodyOffset + f.BodyLength
+		if end > len(res.Text) {
+			t.Errorf("%s: range %d..%d runs past the %d-byte text", f.Path, f.BodyOffset, end, len(res.Text))
+			continue
+		}
+		if got := res.Text[f.BodyOffset:end]; got != bodies[f.Path] {
+			t.Errorf("%s: text[%d:%d] = %q, want %q", f.Path, f.BodyOffset, end, got, bodies[f.Path])
+		}
+	}
+}
+
+// A file that could not be read gets no range, which is how a reader tells "show the
+// error" from "show the content". A truncated one gets a range around the content
+// only: the note after it is addressed to the model, and rendering it as part of the
+// file would put a sentence about budgets inside someone's source.
+func TestReadManyBodyRangeExcludesTheErrorAndTheNote(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "ok.txt", "fine\n")
+	write(t, dir, "big.txt", strings.Repeat("line\n", MaxLines))
+	r := &Read{Cwd: dir}
+
+	res, err := r.Execute(context.Background(), args(t, map[string]any{
+		"paths": []string{"ok.txt", "gone.txt", "big.txt"},
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	d := res.Details.(ReadManyDetails)
+
+	if f := d.Files[1]; f.Error == "" || f.BodyOffset != 0 || f.BodyLength != 0 {
+		t.Errorf("unreadable path: %+v, want an error and no range", f)
+	}
+	big := d.Files[2]
+	if !big.Truncated {
+		t.Fatalf("big.txt was not truncated: %+v", big)
+	}
+	body := res.Text[big.BodyOffset : big.BodyOffset+big.BodyLength]
+	if strings.Contains(body, "budget split") {
+		t.Errorf("the truncation note is inside the recorded body:\n%s", body)
+	}
+	if !strings.HasPrefix(body, "line\n") {
+		t.Errorf("body does not start at the file's first line: %q", body[:min(20, len(body))])
+	}
+	// And the note is still in the text, for the model, immediately after the range.
+	if !strings.Contains(res.Text[big.BodyOffset+big.BodyLength:], "budget split") {
+		t.Error("the truncation note is missing from the text the model reads")
+	}
+}
+
+// One unreadable path must not waste the round trip the call existed to save.
+func TestReadManySurvivesOneBadPath(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "a.go", "package a\n")
+	r := &Read{Cwd: dir}
+
+	res, err := r.Execute(context.Background(), args(t, map[string]any{
+		"paths": []string{"a.go", "gone.go"},
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v, want the good file back", err)
+	}
+	if !strings.Contains(res.Text, "package a") {
+		t.Errorf("the readable file is missing:\n%s", res.Text)
+	}
+	if !strings.Contains(res.Text, "[error:") {
+		t.Errorf("the failure is not reported:\n%s", res.Text)
+	}
+	d := res.Details.(ReadManyDetails)
+	if d.Files[1].Error == "" {
+		t.Error("Details does not record which file failed")
+	}
+	// All of them failing is a different answer: nothing was read, so the model has
+	// to fix the paths rather than reason about empty sections.
+	if _, err := r.Execute(context.Background(), args(t, map[string]any{
+		"paths": []string{"nope.go", "also-nope.go"},
+	})); err == nil {
+		t.Error("a call where every path failed returned success")
+	}
+}
+
+// The budget is divided, not repeated. Five files at the full ceiling each is five
+// times the limit this package exists to enforce.
+func TestReadManyDividesTheBudget(t *testing.T) {
+	dir := t.TempDir()
+	big := strings.Repeat("line\n", MaxLines)
+	write(t, dir, "a.txt", big)
+	write(t, dir, "b.txt", big)
+	r := &Read{Cwd: dir}
+
+	res, err := r.Execute(context.Background(), args(t, map[string]any{
+		"paths": []string{"a.txt", "b.txt"},
+	}))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	d := res.Details.(ReadManyDetails)
+	for _, f := range d.Files {
+		if !f.Truncated {
+			t.Errorf("%s was not truncated; each file must fit its share, not the whole limit", f.Path)
+		}
+		if f.ShownLines > MaxLines/2 {
+			t.Errorf("%s shows %d lines, want at most half of %d", f.Path, f.ShownLines, MaxLines)
+		}
+	}
+	// Truncation has to say how to get the rest, and it has to say it with path:
+	// offset is refused alongside paths.
+	if !strings.Contains(res.Text, "offset=") || !strings.Contains(res.Text, "path=") {
+		t.Errorf("a truncated file does not say how to continue:\n%s", res.Text[:min(400, len(res.Text))])
+	}
+}
+
+// The one-or-many argument has exactly one meaning per call, and every refusal has to
+// name the fix — a model that cannot tell what to change tries the same thing again.
+func TestReadRefusesAmbiguousArguments(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "a.go", "package a\n")
+	r := &Read{Cwd: dir}
+
+	cases := []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"both", map[string]any{"path": "a.go", "paths": []string{"a.go"}}, "not both"},
+		{"neither", map[string]any{}, "required"},
+		{"offset with paths", map[string]any{"paths": []string{"a.go"}, "offset": 2}, "cannot be used with paths"},
+		{"empty path in paths", map[string]any{"paths": []string{"a.go", ""}}, "empty string"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := r.Execute(context.Background(), args(t, tc.args))
+			if err == nil {
+				t.Fatal("Execute succeeded, want a refusal")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+
+	// A single-element paths array is not ambiguous, and takes the single-file path
+	// so that the UI still gets ReadDetails.
+	res, err := r.Execute(context.Background(), args(t, map[string]any{"paths": []string{"a.go"}}))
+	if err != nil {
+		t.Fatalf("Execute with one path: %v", err)
+	}
+	if _, ok := res.Details.(ReadDetails); !ok {
+		t.Errorf("Details = %T, want ReadDetails for a one-file call however it was spelled", res.Details)
+	}
+
+	// A repeated path is read once: the second copy says nothing and would be
+	// charged twice against a budget the other files are sharing.
+	res, err = r.Execute(context.Background(), args(t, map[string]any{
+		"paths": []string{"a.go", "a.go"},
+	}))
+	if err != nil {
+		t.Fatalf("Execute with a duplicate: %v", err)
+	}
+	if _, ok := res.Details.(ReadDetails); !ok {
+		t.Errorf("Details = %T: a duplicated single path should collapse to one file", res.Details)
 	}
 }

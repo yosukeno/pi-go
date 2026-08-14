@@ -1,6 +1,10 @@
 package tui
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/yosukeno/pi-go/config"
+)
 
 func TestCompletionsCommandUnique(t *testing.T) {
 	insert, list := completions("/usa")
@@ -34,7 +38,20 @@ func TestCompletionsListsWhenNoProgress(t *testing.T) {
 	}
 }
 
+// Model completion reads the global catalog, which nothing populates in a test
+// (no config file is loaded), so the fixture is installed rather than depending
+// on whichever models a build happens to ship.
 func TestCompletionsModelNames(t *testing.T) {
+	saved := config.Catalog()
+	config.SetCatalogForTest([]config.Model{
+		{ID: "glm-5.2", Provider: "zhipu", Aliases: []string{"glm", "zhipu"}},
+		{ID: "k3", Provider: "kimi", Aliases: []string{"kimi-k3", "kimi"}},
+		{ID: "k3-256k", Provider: "kimi"},
+		{ID: "kimi-for-coding", Provider: "kimi", Aliases: []string{"k2.7"}},
+		{ID: "kimi-for-coding-highspeed", Provider: "kimi", Aliases: []string{"k2.7-fast"}},
+	})
+	t.Cleanup(func() { config.SetCatalogForTest(saved) })
+
 	insert, list := completions("/model glm-")
 	if insert != "5.2 " || len(list) != 1 || list[0].value != "glm-5.2" {
 		t.Fatalf(`/model glm-: got insert=%q list=%v`, insert, list)

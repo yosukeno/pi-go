@@ -111,10 +111,16 @@ func TestConfigIsNotReadFromTheWorkingDirectory(t *testing.T) {
 		}
 
 		// Load reads the user's path, which is elsewhere, so the planted file has no
-		// effect at all.
-		t.Setenv(PathEnv, filepath.Join(t.TempDir(), "absent.json"))
+		// effect at all. That path must be a *valid* config: nothing is compiled in,
+		// so an absent file is an error and this test is about the planted file, not
+		// about missing-file behaviour.
+		userPath := filepath.Join(t.TempDir(), "providers.json")
+		if err := os.WriteFile(userPath, []byte(`{"providers":{"zhipu":{"base_url":"https://z.example/v4","key_env":"ZHIPU_API_KEY"}},"models":[{"id":"glm-5.2","provider":"zhipu","context_window":1000,"max_tokens":100}]}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(PathEnv, userPath)
 		if _, err := Load(); err != nil {
-			t.Fatalf("Load with no user config: %v", err)
+			t.Fatalf("Load with a user config: %v", err)
 		}
 		if _, ok := providers["evil"]; ok {
 			t.Fatal("a provider from the working directory was loaded")
@@ -283,11 +289,48 @@ func TestUnknownKeysAreRefused(t *testing.T) {
 	}
 }
 
-func TestMissingFileIsNormal(t *testing.T) {
-	t.Setenv(PathEnv, filepath.Join(t.TempDir(), "nope.json"))
+// Nothing is compiled in, so no file means no models at all. The error must name
+// the path (so the user knows where to create it), the override variable, and
+// carry a minimal example — an error that only says "missing" sends someone to the
+// docs for what the file should look like.
+func TestMissingFileIsAnErrorThatExplainsItself(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nope.json")
+	t.Setenv(PathEnv, path)
 	warns, err := Load()
-	if err != nil || len(warns) != 0 {
-		t.Errorf("Load with no file = %v, %v; want silence", warns, err)
+	if err == nil {
+		t.Fatal("Load with no file succeeded; with nothing compiled in there are no models to run")
+	}
+	for _, want := range []string{path, PathEnv, "models"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q: %v", want, err)
+		}
+	}
+	if len(warns) != 0 {
+		t.Errorf("Load with no file produced warnings %v; want none", warns)
+	}
+}
+
+// A file that exists but declares no models is the same state as no file: an
+// explained error, not a running process with an empty catalog that panics on the
+// first catalog[0].
+func TestEmptyCatalogIsAnError(t *testing.T) {
+	// Merge folds onto the package globals, which a sibling test may have filled;
+	// reset them so this sees the fresh-process state Load is actually run in.
+	savedP, savedM := providers, catalog
+	providers, catalog = map[string]Provider{}, nil
+	t.Cleanup(func() { providers, catalog = savedP, savedM })
+
+	path := filepath.Join(t.TempDir(), FileName)
+	if err := os.WriteFile(path, []byte(`{"providers":{"zhipu":{"base_url":"https://z.example/v4","key_env":"ZHIPU_API_KEY"}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(PathEnv, path)
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load accepted a config with no models")
+	}
+	if !strings.Contains(err.Error(), "no models") {
+		t.Errorf("error does not say the catalog is empty: %v", err)
 	}
 }
 

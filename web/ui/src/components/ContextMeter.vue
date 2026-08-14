@@ -64,11 +64,14 @@ interface Cat {
   moreCount?: number;
 }
 
+// Four categories, four skin tokens rather than four literals: the meter is
+// rendered with inline styles, and var() works there, so the chart follows the
+// skin without this file knowing which one is on.
 const COLORS = {
-  overhead: "#7c6cf0",
-  user: "#3b82f6",
-  assistant: "#10b981",
-  tools: "#f59e0b",
+  overhead: "var(--pg-chart-overhead)",
+  user: "var(--pg-chart-user)",
+  assistant: "var(--pg-chart-assistant)",
+  tools: "var(--pg-chart-tools)",
 };
 
 function preview(text: string): string {
@@ -381,9 +384,9 @@ const short = (n: number) => {
   align-items: center;
   gap: 6px;
   height: 30px;
-  padding: 0 10px;
+  padding: 0 11px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   font-size: 12px;
   color: var(--el-text-color-primary);
@@ -392,7 +395,7 @@ const short = (n: number) => {
 
   .el-icon {
     font-size: 16px;
-    color: #000;
+    color: var(--el-text-color-primary);
   }
 
   &:hover {

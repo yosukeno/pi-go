@@ -242,6 +242,15 @@ func main() {
 		fmt.Fprintf(os.Stderr, "pi-go: -max-runs must be at least 1 (got %d)\n", *maxRuns)
 		os.Exit(1)
 	}
+	// Both subagent settings are read from the environment wherever they are needed,
+	// which means a typo would otherwise be silently ignored — and being silently
+	// ignored is the dangerous direction for the isolation one: an operator would go
+	// on believing children share the workspace and find commits instead. Checked
+	// here, once, before either the terminal or the server path builds anything.
+	if err := checkSubagentEnv(os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "pi-go: %v\n", err)
+		os.Exit(2)
+	}
 	if *analyzeSession != "" {
 		if err := analyzeSessionFile(*analyzeSession, *analyzeFormat, *analyzeOutput); err != nil {
 			fmt.Fprintf(os.Stderr, "pi-go: %v\n", err)

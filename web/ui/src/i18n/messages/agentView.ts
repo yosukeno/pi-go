@@ -6,7 +6,6 @@ export default {
     "zh-CN": {
       lang: { label: "语言" },
       flash: {
-        noToken: "URL 里没有 token，请用 pi-go 启动时打印的那个地址打开",
         loadSessionsFailed: "读取会话列表失败：{msg}",
         createFailed: "新建会话失败：{msg}",
         deleteBusy: "这个会话正在跑，先停下来再删",
@@ -133,7 +132,6 @@ export default {
     en: {
       lang: { label: "Language" },
       flash: {
-        noToken: "The URL has no token — open the address pi-go printed at startup.",
         loadSessionsFailed: "Failed to load sessions: {msg}",
         createFailed: "Failed to create session: {msg}",
         deleteBusy: "This session is still running — stop it before deleting.",
@@ -264,7 +262,6 @@ export default {
     ja: {
       lang: { label: "言語" },
       flash: {
-        noToken: "URL に token がありません。pi-go 起動時に表示されたアドレスを開いてください。",
         loadSessionsFailed: "セッション一覧の読み込みに失敗しました：{msg}",
         createFailed: "セッションの作成に失敗しました：{msg}",
         deleteBusy: "このセッションは実行中です。停止してから削除してください。",
@@ -392,7 +389,6 @@ export default {
     ko: {
       lang: { label: "언어" },
       flash: {
-        noToken: "URL에 token이 없습니다. pi-go 시작 시 출력된 주소로 열어주세요.",
         loadSessionsFailed: "세션 목록을 불러오지 못했습니다: {msg}",
         createFailed: "새 세션을 만들지 못했습니다: {msg}",
         deleteBusy: "이 세션은 실행 중입니다. 멈춘 후 삭제하세요.",

@@ -18,19 +18,22 @@ import {
   Top,
 } from "@element-plus/icons-vue";
 import TurnCard from "@/components/TurnCard.vue";
+import TodoBar from "@/components/TodoBar.vue";
 import ContextMeter from "@/components/ContextMeter.vue";
 import UsageMeter from "@/components/UsageMeter.vue";
 import DockArea from "@/components/DockArea.vue";
 import Unreachable from "@/components/Unreachable.vue";
+import TokenGate from "@/components/TokenGate.vue";
 import ModelPicker from "@/components/ModelPicker.vue";
 import PolicyPicker from "@/components/PolicyPicker.vue";
 import SkillBlock from "@/components/SkillBlock.vue";
 import WorkspacePicker from "@/components/WorkspacePicker.vue";
+import ThemePicker from "@/components/ThemePicker.vue";
 import Logo from "@/components/Logo.vue";
 import { Icon } from "@iconify/vue";
 import { baseName, fileIcon, messageIcon, sessionIcon } from "@/components/fileIcons";
 import { useAgentStream } from "@/agent/useAgentStream";
-import { buildTimeline, formatDuration, parseSkillBlock } from "@/agent/timeline";
+import { buildTimeline, formatDuration, liveTodos, parseSkillBlock } from "@/agent/timeline";
 import { invalidateIndex, invalidateTree } from "@/components/fileTreeStore";
 import { migrateSheet, PANEL_PREFIX, SHEET_KEY, TENANT_KEY } from "@/components/dockSheets";
 import StarterCards from "@/components/StarterCards.vue";
@@ -190,6 +193,12 @@ const timeline = computed(() => {
   return buildTimeline(stream.messages.value, stream.results.value, stream.live.value);
 });
 
+// The plan, for the bar pinned above the composer. Derived from the timeline
+// rather than tracked separately: the todo tool holds no state, so the newest
+// settled write *is* the plan, and liveTodos reads that off the same flag the
+// inline cards use. See TodoBar.vue for why it is pinned at all.
+const todos = computed(() => liveTodos(timeline.value));
+
 const busy = computed(() => stream.busy.value);
 const policy = computed(() => stream.policy.value);
 
@@ -218,11 +227,16 @@ const ctxHigh = computed(
   () => ctxWindow.value > 0 && stream.contextTokens.value / ctxWindow.value >= 0.85,
 );
 
+// The token gate: without a token every API call is a 401 by design, so boot
+// stops at the gate page instead of flashing errors out of each loader. A 401
+// later in the session (token rotated under us) re-opens it the same way.
+const tokenRejected = ref(false);
+const gated = computed(() => !token || tokenRejected.value);
+
 onMounted(async () => {
-  if (!token) {
-    showFlash(t("agentView.flash.noToken"), "error", true);
-  }
+  if (gated.value) return;
   await Promise.all([loadSessions(), loadModels(), loadSkills(), loadPanels(), loadStarters()]);
+  if (tokenRejected.value) return;
   if (sessions.value.length > 0) open(sessions.value[0].id);
   else await createSession();
 });
@@ -248,6 +262,10 @@ async function loadSessions() {
     sessions.value = res.sessions;
     cwd.value = res.cwd;
   } catch (err) {
+    if ((err as { status?: number }).status === 401) {
+      tokenRejected.value = true;
+      return;
+    }
     showFlash(t("agentView.flash.loadSessionsFailed", { msg: (err as Error).message }), "error");
   }
 }
@@ -387,6 +405,10 @@ async function createSession(workspace = "") {
     await loadSessions();
     open(res.session_id);
   } catch (err) {
+    if ((err as { status?: number }).status === 401) {
+      tokenRejected.value = true;
+      return;
+    }
     showFlash(t("agentView.flash.createFailed", { msg: (err as Error).message }), "error");
   }
 }
@@ -1069,7 +1091,11 @@ function rewindStatusLabel(status: string) {
             </el-dropdown>
           </li>
         </ul>
+        <!-- Preferences about the window, kept together: which skin and which
+             language. Neither is a fact about the session, so neither belongs in
+             the topbar. -->
         <div class="side-foot">
+          <ThemePicker />
           <el-dropdown trigger="click" placement="top-start" @command="(l: Locale) => setLocale(l)">
             <button class="lang-btn" :title="t('agentView.lang.label')">
               <el-icon
@@ -1097,6 +1123,7 @@ function rewindStatusLabel(status: string) {
         <button class="rail-icon" :title="t('agentView.sidebar.newSession')" @click="pickerOpen = true">
           <el-icon><EditPen /></el-icon>
         </button>
+        <ThemePicker class="rail-theme" icon placement="right-start" />
         <el-dropdown trigger="click" placement="right-start" @command="(l: Locale) => setLocale(l)">
           <button class="rail-icon" :title="t('agentView.lang.label')">
             <el-icon
@@ -1199,6 +1226,7 @@ function rewindStatusLabel(status: string) {
                 :run-active="busy"
                 :skills="skills"
                 :cwd="cwd"
+                :todo-pinned="!!todos"
                 @suggest="suggest"
                 @decide="decide"
                 @freeze="(id: string) => api.freezeGate(current!, id)"
@@ -1269,6 +1297,12 @@ function rewindStatusLabel(status: string) {
         {{ t("agentView.ctxWarn.text", { pct: ctxPct }) }}
         <button @click="pickerOpen = true">{{ t("agentView.ctxWarn.newSession") }}</button>
       </div>
+
+      <!-- Directly above the input, below the context warning: the warning is a
+           decision about whether to send at all, so it stays closest to the
+           button. Outside the scroller by construction — .compose-col is a
+           sibling of .conv-wrap — which is why nothing here is sticky. -->
+      <TodoBar v-if="todos" :todos="todos" :busy="busy" />
 
       <div class="input-card">
           <textarea
@@ -1501,6 +1535,10 @@ function rewindStatusLabel(status: string) {
          to the browser-style cannot-connect screen; the background backoff
          loop still closes it by itself the moment a reconnect lands. -->
     <Unreachable v-if="stream.unreachable.value" :outage="stream.outage.value" @retry="stream.retryNow()" />
+
+    <!-- No usable token: the API answers 401 by design, so the page gives way
+         to the token gate until one is entered (see client.ts setToken). -->
+    <TokenGate v-if="gated" :rejected="tokenRejected" />
   </div>
 </template>
 
@@ -1509,6 +1547,7 @@ function rewindStatusLabel(status: string) {
   display: flex;
   height: 100vh;
   overflow: hidden;
+  background: var(--el-bg-color-page);
 
   /* Bottom dock: switch to a two-column grid — the sidebar spans both rows,
      main and the panel stack in the second column. Row tracks keep the
@@ -1538,7 +1577,10 @@ function rewindStatusLabel(status: string) {
      ghost off. In the steady collapsed state the full layer is opacity: 0 +
      pointer-events: none, so nothing leaks visually or interactively. */
   position: relative;
-  background: var(--el-fill-color-lighter);
+  /* Paper, one step below the conversation's white. That surface step is what
+     separates chrome from content here; the border beside it only has to be
+     strong enough to hold the edge while the sidebar is sliding. */
+  background: var(--el-bg-color-page);
   /* No width transition here, on purpose: width/flex-basis are layout
      properties, so animating them re-lays out the whole page every frame —
      and the unvirtualized conversation re-wraps with it while the rail's
@@ -1615,61 +1657,93 @@ function rewindStatusLabel(status: string) {
   }
 }
 
+/* Two controls on one row, the skin first: it is the one people go looking for,
+   and the language is set once. Both shrink rather than wrap — the sidebar is
+   250px and a wrapped preferences block reads as a second section. */
 .side-foot {
-  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
   border-top: 1px solid var(--el-border-color-lighter);
+  min-width: 0;
+
+  > * {
+    min-width: 0;
+  }
 }
 
 .lang-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  width: 100%;
+  max-width: 100%;
   padding: 6px 8px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 7px;
   background: transparent;
   color: var(--el-text-color-regular);
   font-size: 12px;
   cursor: pointer;
   transition: background 0.15s;
+  overflow: hidden;
 
   .el-icon {
     font-size: 14px;
+    flex: 0 0 auto;
+  }
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   &:hover {
-    background: var(--el-fill-color);
+    background: var(--el-fill-color-light);
   }
 }
 
 .brand {
   display: flex;
   align-items: center;
-  padding: 12px;
+  padding: 14px 12px 10px;
   gap: 8px;
 
   strong {
     font-size: 15px;
-    font-weight: 700;
-    letter-spacing: 0.2px;
+    font-weight: 650;
+    letter-spacing: -0.1px;
   }
 }
 
 .new {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   margin-left: auto;
-  border: 1px solid var(--el-border-color);
+  border: 1px solid var(--el-border-color-light);
   background: var(--el-bg-color);
-  border-radius: 4px;
+  border-radius: 999px;
   font-size: 11px;
-  padding: 3px 8px;
+  font-weight: 500;
+  padding: 4px 10px;
+  color: var(--el-text-color-regular);
   cursor: pointer;
+  box-shadow: var(--el-box-shadow-lighter);
+  transition:
+    border-color var(--pg-transition),
+    color var(--pg-transition),
+    background var(--pg-transition);
 
   .el-icon {
     font-size: 12px;
+  }
+
+  &:hover {
+    border-color: var(--pg-accent-line);
+    background: var(--pg-accent-wash);
+    color: var(--el-color-primary-dark-2);
   }
 }
 
@@ -1699,43 +1773,64 @@ function rewindStatusLabel(status: string) {
 
 /* Lives in the topbar now: left-aligned and bold, ellipsis when the path
    outruns the bar, full path in the tooltip. */
+/* Lives in the topbar: a quiet monospace pill, ellipsis when the path outruns the
+   bar, full path in the tooltip. The tile is what keeps it from reading as a
+   heading — it is a fact about the process, not a title. */
 .cwd {
   min-width: 0;
   max-width: 60%;
-  font: 600 11px ui-monospace, monospace;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--el-fill-color-lighter);
+  font: 500 11px var(--pg-mono);
   color: var(--el-text-color-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* Rows are pills inset from the sidebar's edge, rather than full-bleed bands with
+   an accent stripe on the active one. Two reasons: a stripe against the panel
+   border draws a second vertical line 2px from the first, and a full-bleed
+   highlight makes the active session look like a section header rather than a
+   selected item. */
 .sessions {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 2px 8px 8px;
   overflow-y: auto;
   flex: 1;
 
   li {
     position: relative;
-    padding: 8px 12px;
+    padding: 7px 10px;
+    margin-bottom: 1px;
+    border-radius: 9px;
     cursor: pointer;
-    border-left: 2px solid transparent;
+    transition: background var(--pg-transition);
 
     &:hover {
-      background: var(--el-fill-color);
+      background: var(--el-fill-color-light);
     }
 
     &.active {
-      background: var(--el-fill-color);
-      border-left-color: var(--el-color-primary);
+      background: var(--el-bg-color);
+      box-shadow:
+        var(--el-box-shadow-lighter),
+        inset 0 0 0 1px var(--el-border-color-lighter);
+
+      .title {
+        color: var(--el-text-color-primary);
+        font-weight: 600;
+      }
     }
   }
 }
 
 .title {
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--el-text-color-regular);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1744,8 +1839,8 @@ function rewindStatusLabel(status: string) {
 .sub {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 2px;
+  gap: 7px;
+  margin-top: 3px;
   font-size: 10px;
   color: var(--el-text-color-secondary);
 }
@@ -1822,35 +1917,46 @@ function rewindStatusLabel(status: string) {
   min-width: 0;
 }
 
+/* The topbar carries one fact, so it is a hairline rather than a bar: taller
+   chrome here would be height taken from the conversation to say something that
+   does not change. */
 .topbar {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--el-border-color-lighter);
+  padding: 9px 20px;
+  border-bottom: 1px solid var(--el-border-color-extra-light);
+  background: var(--el-bg-color);
   font-size: 12px;
 }
 
 .notice {
-  padding: 6px 16px;
+  padding: 7px 20px;
   font-size: 12px;
   color: var(--el-color-warning);
-  background: color-mix(in srgb, var(--el-color-warning) 8%, transparent);
+  background: var(--el-color-warning-light-9);
+  border-bottom: 1px solid color-mix(in srgb, var(--el-color-warning) 18%, transparent);
 
   &.bad {
     color: var(--el-color-danger);
-    background: color-mix(in srgb, var(--el-color-danger) 8%, transparent);
+    background: var(--el-color-danger-light-9);
+    border-bottom-color: color-mix(in srgb, var(--el-color-danger) 18%, transparent);
   }
 }
 
+/* Inside the composer column, so it is inset like the card below it rather than a
+   full-bleed band: it belongs to the decision being made here. */
 .ctx-warn {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 16px;
+  margin: 0 16px 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
   font-size: 12px;
   color: var(--el-color-danger);
-  background: color-mix(in srgb, var(--el-color-danger) 10%, transparent);
+  background: var(--el-color-danger-light-9);
+  border: 1px solid color-mix(in srgb, var(--el-color-danger) 20%, transparent);
 
   button {
     margin-left: auto;
@@ -1858,10 +1964,15 @@ function rewindStatusLabel(status: string) {
     border: 1px solid currentcolor;
     background: transparent;
     color: inherit;
-    border-radius: 4px;
+    border-radius: 999px;
     font-size: 11px;
-    padding: 2px 8px;
+    padding: 3px 10px;
     cursor: pointer;
+    transition: background var(--pg-transition);
+
+    &:hover {
+      background: color-mix(in srgb, var(--el-color-danger) 12%, transparent);
+    }
   }
 }
 
@@ -1870,11 +1981,29 @@ function rewindStatusLabel(status: string) {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  background: var(--el-bg-color);
 }
 
+/* Everything in this column is capped at the same measure as the transcript and
+   centred on it, so the answer and the box you reply in share one left edge. The
+   +32px is the cards' own horizontal margin, which keeps their *content* on the
+   measure rather than their borders. */
 .compose-col {
   display: flex;
   flex-direction: column;
+  align-items: center;
+
+  > * {
+    width: 100%;
+    max-width: calc(var(--pg-measure) + 32px);
+  }
+}
+
+/* The pinned plan is a child component, so its root is what carries the inset —
+   the card below it sets its own margin, and the two have to line up. */
+.compose-col > .todo-bar {
+  margin-left: 16px;
+  margin-right: 16px;
 }
 
 .conv-wrap {
@@ -1888,14 +2017,23 @@ function rewindStatusLabel(status: string) {
 .conversation {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 20px 24px;
+  padding: 20px 28px 28px;
 }
+
+
 
 /* Session-switch crossfade: opacity/transform only — never a layout
    property, so a long conversation cannot re-wrap mid-animation. The same
    class drives both directions: added, the old content sinks out; removed
    (snapshot arrived), the new content rises in. */
 .conv-inner {
+  /* A reading column, not a window-wide one: prose set across 1900px is
+     unreadable — the eye loses the line on the way back — and this transcript is
+     mostly prose. The measure is shared with the composer column, and the
+     scroller around this keeps the full width so the rail stays on the window
+     edge and the scrollbar cannot move as the layout changes. */
+  max-width: var(--pg-measure);
+  margin: 0 auto;
   transition:
     opacity 0.18s ease,
     transform 0.18s ease;
@@ -2033,12 +2171,14 @@ function rewindStatusLabel(status: string) {
 
 .empty {
   color: var(--el-text-color-secondary);
-  font-size: 13px;
-  padding: 24px 0;
+  font-size: 13.5px;
+  line-height: 1.7;
+  padding: 48px 0 24px;
+  text-align: center;
 }
 
 .ask {
-  margin: 18px 0 4px;
+  margin: 24px 0 6px;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -2046,13 +2186,17 @@ function rewindStatusLabel(status: string) {
 
 .ask-bubble {
   max-width: 76%;
-  padding: 10px 16px;
-  /* ChatGPT's user bubble: a quiet light-grey tile, not a coloured one. */
-  background: var(--el-fill-color);
-  color: #000;
-  border-radius: 18px;
+  padding: 11px 16px;
+  /* ChatGPT's user bubble: a quiet tile, not a coloured one. Warm rather than
+     grey, so it sits on the same paper as the rest of the interface — a neutral
+     grey tile on a warm page reads as a screenshot pasted in. */
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-extra-light);
+  color: var(--el-text-color-primary);
+  border-radius: var(--pg-radius-bubble);
+  border-bottom-right-radius: 6px;
   font-size: 14px;
-  line-height: 1.6;
+  line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -2118,11 +2262,17 @@ function rewindStatusLabel(status: string) {
   }
 }
 
+/* A pill rather than a bare line: this is the only thing on screen during the gap
+   before the first token, and a floating grey sentence in the middle of the
+   transcript reads as an answer that failed to render. */
 .waiting {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin: 8px 0;
+  margin: 10px 0;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--el-fill-color-lighter);
   font-size: 12px;
   color: var(--el-text-color-secondary);
 }
@@ -2187,19 +2337,19 @@ function rewindStatusLabel(status: string) {
   background: transparent;
   text-align: left;
   cursor: pointer;
-  padding: 4px 6px;
-  border-radius: 4px;
+  padding: 5px 8px;
+  border-radius: 7px;
 
   &:hover,
   &:focus-visible {
-    background: var(--el-fill-color);
+    background: var(--el-fill-color-light);
   }
 }
 
 .hint-name {
-  font-family: ui-monospace, monospace;
+  font-family: var(--pg-mono);
   font-size: 12px;
-  color: var(--el-color-primary);
+  color: var(--el-color-primary-dark-2);
   flex: 0 0 auto;
 }
 
@@ -2218,17 +2368,22 @@ function rewindStatusLabel(status: string) {
 .input-card {
   display: flex;
   flex-direction: column;
-  margin: 0px 16px 14px;
-  border: 1px solid var(--el-border-color);
-  border-radius: 12px;
-  padding: 8px 10px 6px;
+  margin: 0 16px 16px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: var(--pg-radius-card);
+  padding: 10px 12px 8px;
+  background: var(--el-bg-color);
+  /* Resting elevation: the composer is the one thing on the page that is always
+     interactive, and a flat outline puts it on the same plane as the transcript
+     it sits under. */
+  box-shadow: var(--el-box-shadow-light);
   transition:
     border-color 0.2s,
     box-shadow 0.2s;
 
   &:focus-within {
-    border-color: color-mix(in srgb, var(--el-color-primary) 45%, transparent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--el-color-primary) 10%, transparent);
+    border-color: var(--pg-accent-line);
+    box-shadow: var(--el-box-shadow-light), var(--pg-ring);
   }
 
   textarea {
@@ -2238,8 +2393,13 @@ function rewindStatusLabel(status: string) {
     border: 0;
     background: transparent;
     padding: 2px 0;
-    font: 13px/1.6 inherit;
+    font: 14px/1.65 inherit;
+    color: var(--el-text-color-primary);
     outline: none;
+
+    &::placeholder {
+      color: var(--el-text-color-placeholder);
+    }
   }
 }
 
@@ -2247,7 +2407,7 @@ function rewindStatusLabel(status: string) {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 6px;
 }
 
 /* Transparent in the right dock; only the bottom dock positions it (as the
@@ -2297,6 +2457,16 @@ function rewindStatusLabel(status: string) {
     .input-bar {
       flex-wrap: wrap;
     }
+
+    /* The card's margin is tighter in this column, and the pinned plan has to
+       track it or the two stop sharing a left edge. */
+    > .todo-bar {
+      margin: 10px 12px 0;
+    }
+
+    > .ctx-warn {
+      margin: 10px 12px 0;
+    }
   }
 }
 
@@ -2310,9 +2480,9 @@ function rewindStatusLabel(status: string) {
 .stop {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 30px;
-  padding: 0 14px;
+  gap: 5px;
+  height: 32px;
+  padding: 0 15px;
   border-radius: 6px;
   border: 1px solid var(--el-border-color);
   background: var(--el-bg-color);
@@ -2331,14 +2501,22 @@ function rewindStatusLabel(status: string) {
 
 .stop {
   color: var(--el-color-danger);
+  border-color: color-mix(in srgb, var(--el-color-danger) 28%, var(--el-border-color));
+
+  &:hover {
+    background: var(--el-color-danger-light-9);
+    border-color: color-mix(in srgb, var(--el-color-danger) 45%, transparent);
+  }
 }
 
 .send-btn {
-  /* Pure black, not the primary ramp: the one affirmative action on the page
-     gets the strongest contrast. */
-  color: #fff;
-  background: #000;
-  border-color: #000;
+  /* The skin's solid: on a light skin that is its own ink, because black on paper
+     is the strongest contrast available and the accent is spent on live state
+     rather than on actions. On a dark skin an ink button would be invisible, so
+     the solid is the accent there — see theme/build.ts. */
+  color: var(--pg-on-solid);
+  background: var(--pg-solid);
+  border-color: var(--pg-solid);
 
   .el-icon {
     font-size: 15px;
@@ -2358,8 +2536,8 @@ function rewindStatusLabel(status: string) {
   }
 
   &:hover:not(:disabled) {
-    background: #333;
-    border-color: #333;
+    background: var(--pg-solid-hover);
+    border-color: var(--pg-solid-hover);
   }
 
   &:active:not(:disabled) {

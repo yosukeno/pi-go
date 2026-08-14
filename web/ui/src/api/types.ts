@@ -43,6 +43,36 @@ export interface ReadDetails {
   truncated_by?: string;
 }
 
+/** One file inside a multi-file read. `error` replaces the counts when it failed. */
+export interface ReadFileDetails {
+  path: string;
+  total_lines?: number;
+  shown_lines?: number;
+  truncated?: boolean;
+  truncated_by?: string;
+  error?: string;
+  /**
+   * Byte range of this file's content inside the result text, excluding the header
+   * and the truncation note. Absent for a path that could not be read, and for
+   * transcripts recorded before the fields existed. See ReadFileDetails in
+   * tools/result.go for why the body is located this way rather than parsed out.
+   */
+  body_offset?: number;
+  body_length?: number;
+}
+
+/**
+ * A read of several files in one call.
+ *
+ * Deliberately without a top-level `total_lines`, because that field is how a read
+ * result is discriminated from this one (isReadDetails) and ReadResult draws exactly
+ * one file. The shape is the Go type's, tags and all; see ReadManyDetails there for
+ * why the budget is split and why one unreadable path does not fail the call.
+ */
+export interface ReadManyDetails {
+  files: ReadFileDetails[];
+}
+
 export interface LsDetails {
   path: string;
   entries: number;
@@ -75,6 +105,8 @@ export interface EditDetails {
 
 export interface BashDetails {
   command: string;
+  /** Where it ran, present only when that was not the session's own directory. */
+  workdir?: string;
   exit_code: number;
   duration_ms: number;
   timed_out?: boolean;
@@ -109,6 +141,7 @@ export interface GrepDetails {
 
 export type ToolDetails =
   | ReadDetails
+  | ReadManyDetails
   | LsDetails
   | FindDetails
   | GrepDetails

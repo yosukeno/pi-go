@@ -1,7 +1,21 @@
+import { cssVar } from "@/theme";
+
 let mermaidPromise: Promise<(typeof import("mermaid"))["default"]> | undefined;
 let purifierPromise: Promise<(typeof import("dompurify"))["default"]> | undefined;
 let initialized = false;
 let renderSequence = 0;
+
+/**
+ * resetTheme makes the next render re-initialize with the current skin.
+ *
+ * Mermaid resolves colours once, at initialize, and writes them into the SVG it
+ * produces — so a diagram already on screen cannot be re-styled, only re-rendered.
+ * MermaidDiagram watches the skin and does exactly that; this is the half that
+ * makes the re-render pick up new colours instead of repeating the old ones.
+ */
+export function resetMermaidTheme(): void {
+  initialized = false;
+}
 
 async function loadMermaid() {
   mermaidPromise ??= import("mermaid").then((module) => module.default);
@@ -17,17 +31,22 @@ async function loadMermaid() {
       suppressErrorRendering: true,
       htmlLabels: false,
       theme: "base",
+      // Read off the skin rather than fixed: a diagram is content on the
+      // conversation surface, and a white-on-white flowchart in a dark skin is
+      // the most visible way to get this wrong. darkMode tells mermaid which
+      // direction to derive the shades it computes for itself.
       themeVariables: {
-        darkMode: false,
-        background: "#ffffff",
-        primaryColor: "#f4f4f5",
-        primaryTextColor: "#111827",
-        primaryBorderColor: "#6b7280",
-        secondaryColor: "#fefce8",
-        tertiaryColor: "#f8fafc",
-        lineColor: "#374151",
-        clusterBkg: "#fffde7",
-        clusterBorder: "#c9bc64",
+        darkMode: document.documentElement.classList.contains("dark"),
+        background: cssVar("--el-bg-color", "#ffffff"),
+        primaryColor: cssVar("--pg-diagram-node", "#f4f4f5"),
+        primaryTextColor: cssVar("--el-text-color-primary", "#111827"),
+        primaryBorderColor: cssVar("--el-border-color-dark", "#6b7280"),
+        secondaryColor: cssVar("--pg-diagram-alt", "#fefce8"),
+        tertiaryColor: cssVar("--el-fill-color-lighter", "#f8fafc"),
+        lineColor: cssVar("--el-text-color-regular", "#374151"),
+        textColor: cssVar("--el-text-color-primary", "#111827"),
+        clusterBkg: cssVar("--pg-diagram-cluster", "#fffde7"),
+        clusterBorder: cssVar("--el-border-color", "#c9bc64"),
         fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, Microsoft YaHei, sans-serif",
       },
       flowchart: { htmlLabels: false },

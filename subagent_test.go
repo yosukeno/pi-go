@@ -1,6 +1,8 @@
 package main
 
 import (
+	"io"
+	"strings"
 	"testing"
 
 	"github.com/yosukeno/pi-go/tools"
@@ -150,5 +152,63 @@ func TestChildDoesNotInheritTheParentsTurnLimit(t *testing.T) {
 	// to whatever the default happens to be.
 	if o.Subagent.Model != "parent-model" {
 		t.Errorf("Subagent.Model = %q, want the parent's", o.Subagent.Model)
+	}
+}
+
+// Shared isolation removes a safety property — a delegated run can touch the
+// working directory, immediately and with nothing to review — and it is switched on
+// by an environment variable, which is the least visible place a decision can live.
+// So it has to announce itself, and a misspelling has to stop the process rather
+// than fall back quietly to the safe mode: an operator who typed `shard` believes
+// children share the workspace and would find commits instead.
+func TestCheckSubagentEnvAnnouncesSharedAndRefusesTypos(t *testing.T) {
+	t.Setenv(tools.EnvSubagentDepth, "")
+
+	var notices strings.Builder
+	t.Setenv(tools.EnvIsolation, tools.IsolationShared)
+	if err := checkSubagentEnv(&notices); err != nil {
+		t.Fatalf("shared isolation was rejected: %v", err)
+	}
+	for _, want := range []string{tools.EnvIsolation, "no isolated worktree", "cannot be reviewed"} {
+		if !strings.Contains(notices.String(), want) {
+			t.Errorf("notice %q is missing %q", notices.String(), want)
+		}
+	}
+
+	// The default says nothing. A notice on every ordinary run is a notice nobody
+	// reads by the time it matters.
+	notices.Reset()
+	t.Setenv(tools.EnvIsolation, "")
+	if err := checkSubagentEnv(&notices); err != nil || notices.String() != "" {
+		t.Errorf("default run: err = %v, notices = %q, want silence", err, notices.String())
+	}
+
+	// A child says nothing either: once per session, not once per delegation.
+	notices.Reset()
+	t.Setenv(tools.EnvIsolation, tools.IsolationShared)
+	t.Setenv(tools.EnvSubagentDepth, "1")
+	if err := checkSubagentEnv(&notices); err != nil || notices.String() != "" {
+		t.Errorf("child process: err = %v, notices = %q, want silence", err, notices.String())
+	}
+	t.Setenv(tools.EnvSubagentDepth, "")
+
+	// Both variables are refused loudly, and the refusal names the variable so the
+	// reader knows which of the two to fix.
+	for _, c := range []struct{ env, value string }{
+		{tools.EnvIsolation, "shard"},
+		{tools.EnvConcurrency, "lots"},
+		{tools.EnvConcurrency, "0"},
+	} {
+		t.Setenv(tools.EnvIsolation, "")
+		t.Setenv(tools.EnvConcurrency, "")
+		t.Setenv(c.env, c.value)
+		err := checkSubagentEnv(io.Discard)
+		if err == nil {
+			t.Errorf("%s=%q was accepted", c.env, c.value)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.env) {
+			t.Errorf("%s=%q: err %v does not name the variable", c.env, c.value, err)
+		}
 	}
 }

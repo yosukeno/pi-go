@@ -136,15 +136,19 @@ function reject() {
 </template>
 
 <style scoped lang="scss">
+/* The run is stopped on this card, so it is the one thing in the transcript that
+   is allowed to look like an interruption: a tinted card with a full border, not
+   a row. */
 .gate {
-  border: 1px solid var(--el-color-warning);
-  border-radius: 6px;
-  padding: 10px 12px;
-  background: color-mix(in srgb, var(--el-color-warning) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--el-color-warning) 45%, transparent);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--el-color-warning-light-9);
+  box-shadow: var(--el-box-shadow-lighter);
 
   &.dangerous {
-    border-color: var(--el-color-danger);
-    background: color-mix(in srgb, var(--el-color-danger) 6%, transparent);
+    border-color: color-mix(in srgb, var(--el-color-danger) 45%, transparent);
+    background: var(--el-color-danger-light-9);
   }
 
   &.expired {
@@ -167,8 +171,8 @@ function reject() {
 }
 
 .tool {
-  font-family: ui-monospace, monospace;
-  color: var(--el-color-primary);
+  font-family: var(--pg-mono);
+  color: var(--el-color-primary-dark-2);
 }
 
 .clock {
@@ -177,16 +181,18 @@ function reject() {
   color: var(--el-text-color-secondary);
 }
 
+/* White, not the page's fill: this is the thing being approved, and on a tinted
+   card the only way to make it the focus is to lift it out of the tint. */
 .args,
 .editor {
   width: 100%;
   box-sizing: border-box;
   margin: 0;
-  padding: 8px 10px;
-  border-radius: 4px;
-  border: 1px solid var(--el-border-color-lighter);
-  background: var(--el-fill-color-lighter);
-  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 9px 11px;
+  border-radius: 9px;
+  border: 1px solid var(--el-border-color-light);
+  background: var(--el-bg-color);
+  font: 12px/1.55 var(--pg-mono);
   white-space: pre-wrap;
   word-break: break-all;
 }
@@ -220,25 +226,45 @@ function reject() {
   button {
     border: 1px solid var(--el-border-color);
     background: var(--el-bg-color);
-    border-radius: 4px;
-    padding: 4px 12px;
+    border-radius: 999px;
+    padding: 5px 14px;
     font-size: 12px;
+    font-weight: 500;
     cursor: pointer;
+    transition:
+      background var(--pg-transition),
+      border-color var(--pg-transition);
+
+    &:hover:not(:disabled) {
+      border-color: var(--el-border-color-hover);
+    }
 
     &:disabled {
       opacity: 0.5;
       cursor: default;
     }
 
+    /* The skin's solid, like Send: approving is the affirmative action, and it is
+       the one button on a tinted card that must not read as part of the tint. */
     &.primary {
-      background: var(--el-color-primary);
-      border-color: var(--el-color-primary);
-      color: #fff;
+      background: var(--pg-solid);
+      border-color: var(--pg-solid);
+      color: var(--pg-on-solid);
+
+      &:hover:not(:disabled) {
+        background: var(--pg-solid-hover);
+        border-color: var(--pg-solid-hover);
+      }
     }
 
     &.danger-btn {
       color: var(--el-color-danger);
       border-color: color-mix(in srgb, var(--el-color-danger) 40%, transparent);
+
+      &:hover:not(:disabled) {
+        background: color-mix(in srgb, var(--el-color-danger) 8%, var(--el-bg-color));
+        border-color: var(--el-color-danger);
+      }
     }
   }
 }

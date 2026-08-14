@@ -78,7 +78,7 @@ async function copy() {
       </button>
     </div>
     <div class="body" :style="{ maxHeight }">
-      <AnsiText v-if="terminal" :text="plain" />
+      <AnsiText v-if="terminal" :text="plain" line-numbers />
       <pre v-else><code><span v-for="(line, i) in lines" :key="i" class="row"><span
         v-if="lineNumbers" class="ln">{{ startLine + i }}</span><span class="txt"><span
         v-for="(tok, j) in line" :key="j" :class="tok.kind">{{ tok.text }}</span></span></span></code></pre>
@@ -96,25 +96,27 @@ async function copy() {
   background: var(--el-fill-color-lighter);
 
   &.terminal {
-    background: #1e1f22;
-    border-color: #2c2e33;
+    background: var(--pg-term-bg);
+    border-color: var(--pg-term-line);
 
     .body,
     .lang,
     .count {
-      color: #d6d7db;
+      color: var(--pg-term-fg);
     }
 
-    /* The label pill and the collapsed fade are otherwise driven by light-theme
-       CSS vars (--el-fill-color*), which on this dark surface read as a white
-       pill and a white band washing out the last lines of output. Pull both
-       onto the terminal's own dark ramp. */
+    /* The label pill and the collapsed fade are otherwise driven by the skin's
+       surface vars (--el-fill-color*), which on this dark block read as a pale
+       pill and a pale band washing out the last lines of output. Pull both onto
+       the terminal's own ramp — which is a skin token too, so a light skin's
+       output block still comes from its own family's dark palette. */
     .lang {
-      background: #2c2e33;
+      background: var(--pg-term-fill);
+      border-color: var(--pg-term-line);
     }
 
     .fade {
-      background: linear-gradient(transparent, #1e1f22);
+      background: linear-gradient(transparent, var(--pg-term-bg));
     }
   }
 }
@@ -200,30 +202,32 @@ async function copy() {
 }
 
 // A restrained palette: the point is to find a string or a comment at a glance,
-// not to turn the file into a rainbow.
+// not to turn the file into a rainbow. Six slots, mapped onto colours the skin
+// already declares (theme/build.ts), so a code block is in the same family as the
+// interface around it and is legible on a dark skin without a second theme file.
 .comment {
-  color: #6a737d;
+  color: var(--pg-syn-comment);
   font-style: italic;
 }
 
 .string {
-  color: #0a6640;
+  color: var(--pg-syn-string);
 }
 
 .number {
-  color: #005cc5;
+  color: var(--pg-syn-number);
 }
 
 .keyword {
-  color: #b31d28;
+  color: var(--pg-syn-keyword);
 }
 
 .type {
-  color: #6f42c1;
+  color: var(--pg-syn-type);
 }
 
 .func {
-  color: #795e26;
+  color: var(--pg-syn-func);
 }
 
 .fade {

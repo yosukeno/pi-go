@@ -14,6 +14,8 @@ export default {
       byBytes: "字节上限",
       byLines: "行数上限",
       noEvents: "还没有事件",
+      neverStarted: "未启动",
+      neverStartedHint: "子代理没有启动，下面是原因。",
       turns: "{n} 轮",
     },
     en: {
@@ -29,6 +31,8 @@ export default {
       byBytes: "byte limit",
       byLines: "line limit",
       noEvents: "No events yet",
+      neverStarted: "never started",
+      neverStartedHint: "The subagent never started; the reason is below.",
       turns: "{n} turns",
     },
     ja: {
@@ -44,6 +48,8 @@ export default {
       byBytes: "バイト上限",
       byLines: "行数上限",
       noEvents: "イベントはまだありません",
+      neverStarted: "未起動",
+      neverStartedHint: "サブエージェントは起動しませんでした。理由は以下です。",
       turns: "{n} ターン",
     },
     ko: {
@@ -59,6 +65,8 @@ export default {
       byBytes: "바이트 상한",
       byLines: "줄 수 상한",
       noEvents: "아직 이벤트가 없습니다",
+      neverStarted: "시작되지 않음",
+      neverStartedHint: "서브에이전트가 시작되지 않았습니다. 아래가 그 이유입니다.",
       turns: "{n}턴",
     },
   },

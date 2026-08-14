@@ -7,11 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/yosukeno/pi-go/worktree"
 )
@@ -83,6 +82,35 @@ case "$STUB_MODE" in
       *) sh=silent ;;
     esac
     say "{\"type\":\"token\",\"text\":\"role=$got shell=$sh\"}"
+    say '{"type":"run_end","stop_reason":"end_turn"}'
+    ;;
+  sharednote)
+    # Reports which facts of the shared-isolation preamble arrived, and whether the
+    # worktree one leaked in. Flags rather than the text, same as the two modes
+    # around it: re-encoding a multi-line prompt as JSON from sh is not worth the
+    # escaping, and the assertion wants the facts anyway, not the wording.
+    say '{"type":"turn_start","turn":1}'
+    case "$*" in
+      *"<your-directory>"*) got=fenced ;;
+      *) got=none ;;
+    esac
+    case "$*" in
+      *"no git here"*) nogit=stated ;;
+      *) nogit=silent ;;
+    esac
+    case "$*" in
+      *"full path"*) paths=stated ;;
+      *) paths=silent ;;
+    esac
+    case "$*" in
+      *"Other subagents"*) siblings=stated ;;
+      *) siblings=silent ;;
+    esac
+    case "$*" in
+      *"<your-checkout>"*) leak=worktree ;;
+      *) leak=none ;;
+    esac
+    say "{\"type\":\"token\",\"text\":\"note=$got nogit=$nogit paths=$paths siblings=$siblings leak=$leak\"}"
     say '{"type":"run_end","stop_reason":"end_turn"}'
     ;;
   prompt)
@@ -332,61 +360,9 @@ func TestSubagentFailuresAreActionable(t *testing.T) {
 	}
 }
 
-// A child that never finishes is stopped, and its process group goes with it —
-// otherwise a `go test` it started outlives the turn that gave up on it.
-func TestSubagentTimeoutKillsTheChild(t *testing.T) {
-	root, stub := repoFixture(t)
-	// Outside the worktree, which is reclaimed as soon as the run ends.
-	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
-	t.Setenv("STUB_MODE", "hang")
-	t.Setenv("STUB_PIDFILE", pidFile)
-	// Two seconds, and not the 300ms this used to be. The budget has to cover a real
-	// `git worktree add`, a process spawn and a shell start before the child reaches
-	// the line that records its grandchild — at 300ms the parent could give up first,
-	// and then the pidfile assertion below failed for a reason that had nothing to do
-	// with process groups. It went from passing to failing five times out of five on
-	// one machine without the code changing, which is what a test racing its own
-	// fixture looks like. Do not tune this back down to make the suite faster: the
-	// timeout being generous costs under two seconds and is the only thing making the
-	// assertion mean what it says.
-	s := &Subagent{Cwd: root, Exe: stub, Timeout: 2 * time.Second}
-
-	start := time.Now()
-	res, err := call(t, s, ModeEdit, "loop forever")
-	if err == nil {
-		t.Fatal("Execute() on a hanging child succeeded, want a timeout")
-	}
-	if !strings.Contains(err.Error(), "did not finish within") {
-		t.Errorf("error = %v, want a timeout message", err)
-	}
-	if elapsed := time.Since(start); elapsed > 10*time.Second {
-		t.Errorf("took %v to give up, want about the timeout", elapsed)
-	}
-	// The lock is released even on the failure path, so prune can reclaim it.
-	d := details(t, res)
-	if _, err := os.Stat(filepath.Join(root, ".git", "worktrees", d.ID, "locked")); err == nil {
-		t.Error("the worktree is still locked after the child was killed")
-	}
-	// The grandchild has to be gone too. This is the assertion that matters: a
-	// `go test` started by a subagent must not outlive the turn that gave up on it,
-	// and killing only the direct child leaves it running under init.
-	raw, err := os.ReadFile(pidFile)
-	if err != nil {
-		t.Fatalf("the stub never recorded a grandchild: %v", err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil {
-		t.Fatalf("grandchild pid %q: %v", raw, err)
-	}
-	// Give the group a moment to die, then insist that it did.
-	for i := 0; i < 40 && syscall.Kill(pid, 0) == nil; i++ {
-		time.Sleep(50 * time.Millisecond)
-	}
-	if err := syscall.Kill(pid, 0); err == nil {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
-		t.Errorf("grandchild %d survived the timeout; the process group was not killed", pid)
-	}
-}
+// TestSubagentTimeoutKillsTheChild lives in subagent_kill_unix_test.go: it asserts
+// a process-group guarantee that only Unix makes, and its syscall.Kill is what kept
+// `go vet` from passing for GOOS=windows.
 
 // A child that dies mid-write leaves a partial line. Losing the whole turn over the
 // last thirty bytes of a crash would be a bug of our own.
@@ -435,6 +411,238 @@ func TestSubagentEditRefusesOutsideAGitRepo(t *testing.T) {
 	_, err := call(t, s, ModeEdit, "anything")
 	if err == nil || !strings.Contains(err.Error(), "not inside a git repository") {
 		t.Errorf("Execute() outside a repo = %v, want a refusal naming the cause", err)
+	}
+}
+
+// ExploreOnly is the answer to the failure above arriving too late to help.
+// TestSubagentEditRefusesOutsideAGitRepo pins that the refusal happens; this pins
+// that a session which already knows it will happen does not offer the mode at all.
+//
+// Both halves matter and they fail differently. A schema still listing "edit" gets
+// picked, once per turn, forever — observed live as four identical failures in one
+// run. A description that goes quiet about it gets the model proposing shell work
+// for a tool that cannot do any, so it has to say what to do instead.
+func TestExploreOnlyWithholdsEditModeFromTheModel(t *testing.T) {
+	s := &Subagent{Cwd: t.TempDir(), ExploreOnly: true}
+
+	props, _ := s.InputSchema()["properties"].(map[string]any)
+	mode, _ := props["mode"].(map[string]any)
+	enum, _ := mode["enum"].([]string)
+	if len(enum) != 1 || enum[0] != ModeExplore {
+		t.Errorf("mode enum = %v, want only %q", enum, ModeExplore)
+	}
+	// Still required: the field is what records a delegation's intent in the
+	// transcript and labels it in the UI, so it does not vanish with the choice.
+	req, _ := s.InputSchema()["required"].([]string)
+	if !slices.Contains(req, "mode") {
+		t.Errorf("required = %v, want mode to stay required", req)
+	}
+
+	desc := s.Description()
+	for _, want := range []string{"not available", "git repository", "do not delegate it"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("description is missing %q:\n%s", want, desc)
+		}
+	}
+
+	// And the ordinary case is untouched, which is the thing most easily broken by
+	// a later edit to the shared prose.
+	plain := &Subagent{Cwd: t.TempDir()}
+	pProps, _ := plain.InputSchema()["properties"].(map[string]any)
+	pMode, _ := pProps["mode"].(map[string]any)
+	if pEnum, _ := pMode["enum"].([]string); !slices.Equal(pEnum, []string{ModeExplore, ModeEdit}) {
+		t.Errorf("without ExploreOnly: mode enum = %v, want both modes", pEnum)
+	}
+	if !strings.Contains(plain.Description(), "`git cherry-pick <commit>`") {
+		t.Error("without ExploreOnly: the description lost the edit-mode paragraph")
+	}
+}
+
+// A model can repeat a mode it used earlier in the session, and ValidateArgs reads
+// the reflection schema, whose enum tag is static — so the enum is not the only
+// guard needed. The message has to differ from worktree.Open's: that one advises
+// `git init`, which is advice for a person at a terminal, and a subagent cannot run
+// git at all.
+func TestExploreOnlyAnswersAnEditRequestWithSomethingActionable(t *testing.T) {
+	s := &Subagent{Cwd: t.TempDir(), Exe: "/bin/true", ExploreOnly: true}
+
+	_, err := call(t, s, ModeEdit, "run the test suite")
+	if err == nil {
+		t.Fatal("edit mode was accepted with ExploreOnly set")
+	}
+	for _, want := range []string{"not available", ModeExplore, "bash"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %v is missing %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "git init") {
+		t.Errorf("refusal %v repeats advice the model cannot act on", err)
+	}
+}
+
+// The env readers decide a safety property from a string, so the case that matters
+// is the one nobody types on purpose: a misspelling must land on the isolating
+// default *and* be reported, because being silently ignored is what leaves an
+// operator convinced the mode is on.
+func TestIsolationFromEnv(t *testing.T) {
+	for _, c := range []struct {
+		set     string
+		want    string
+		wantErr bool
+	}{
+		{"", IsolationWorktree, false},
+		{IsolationWorktree, IsolationWorktree, false},
+		{IsolationShared, IsolationShared, false},
+		{"  shared  ", IsolationShared, false},
+		{"shard", IsolationWorktree, true},
+		{"SHARED", IsolationWorktree, true},
+		{"none", IsolationWorktree, true},
+	} {
+		t.Setenv(EnvIsolation, c.set)
+		got, err := IsolationFromEnv()
+		if got != c.want {
+			t.Errorf("%s=%q: got %q, want %q", EnvIsolation, c.set, got, c.want)
+		}
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s=%q: err = %v, wantErr %v", EnvIsolation, c.set, err, c.wantErr)
+		}
+		// A refusal has to name both choices, or it tells the reader what is wrong
+		// without telling them what to write instead.
+		if err != nil {
+			for _, want := range []string{IsolationWorktree, IsolationShared} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("%s=%q: err %v does not name %q", EnvIsolation, c.set, err, want)
+				}
+			}
+		}
+	}
+}
+
+func TestConcurrencyFromEnv(t *testing.T) {
+	for _, c := range []struct {
+		set     string
+		want    int
+		wantErr bool
+	}{
+		{"", 0, false}, // 0 means "leave it to the default", same as the field
+		{"4", 4, false},
+		{" 4 ", 4, false},
+		{"0", 0, true},
+		{"-1", 0, true},
+		{"lots", 0, true},
+	} {
+		t.Setenv(EnvConcurrency, c.set)
+		got, err := ConcurrencyFromEnv()
+		if got != c.want || (err != nil) != c.wantErr {
+			t.Errorf("%s=%q: got (%d, %v), want (%d, wantErr %v)",
+				EnvConcurrency, c.set, got, err, c.want, c.wantErr)
+		}
+	}
+}
+
+// The success path for shared isolation, which is the mirror image of
+// TestSubagentReturnsWorkAsACommit: the file lands in the parent's own directory,
+// there is no worktree and no commit, and the answer says so. Each assertion here
+// is the negation of one there, deliberately — the two together are what stop the
+// modes from quietly converging.
+func TestSharedIsolationWorksInTheParentsDirectory(t *testing.T) {
+	root, stub := repoFixture(t)
+	t.Setenv("STUB_MODE", "writes")
+	s := &Subagent{Cwd: root, Exe: stub, Isolation: IsolationShared}
+
+	res, err := call(t, s, ModeEdit, "add a file")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	d := details(t, res)
+	if d.Isolation != IsolationShared {
+		t.Errorf("Details.Isolation = %q, want %q", d.Isolation, IsolationShared)
+	}
+	if d.Mode != ModeEdit {
+		t.Errorf("Details.Mode = %q, want %q", d.Mode, ModeEdit)
+	}
+	if d.Commit != "" || d.Ref != "" || d.Worktree != "" {
+		t.Errorf("Details = %+v, want no commit, ref or worktree under shared isolation", d)
+	}
+	// The deliverable is the file, in the place the parent can read it.
+	body, err := os.ReadFile(filepath.Join(root, "added.txt"))
+	if err != nil {
+		t.Fatalf("the subagent's file is not in the parent's directory: %v", err)
+	}
+	if strings.TrimSpace(string(body)) != "from the subagent" {
+		t.Errorf("added.txt = %q", body)
+	}
+	// Nothing was committed, so the parent's checkout is dirty — the opposite of the
+	// worktree path's guarantee, and the price the mode is paying.
+	if status := gitRun(t, root, "status", "--porcelain"); status == "" {
+		t.Error("parent working tree is clean; the child's file was not left in place")
+	}
+	if rows := strings.Count(gitRun(t, root, "worktree", "list"), "\n"); rows != 0 {
+		t.Errorf("git worktree list has %d extra rows; shared isolation created a checkout", rows)
+	}
+	// "changed no files" would be a claim nothing measured: there is no commit to
+	// measure with. Saying it would send the parent looking for output that is there.
+	if strings.Contains(res.Text, "changed no files") {
+		t.Errorf("Text = %q, claims nothing changed with no commit to base that on", res.Text)
+	}
+	if !strings.Contains(res.Text, "no commit") {
+		t.Errorf("Text = %q, want it to say there is no commit", res.Text)
+	}
+}
+
+// Shared isolation needs no repository, so the refusal that guards the worktree path
+// must not apply to it — and edit mode must stay in the schema. This is the whole
+// reason ExploreOnly is consulted through a method instead of read directly.
+func TestSharedIsolationNeedsNoRepository(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	stub := filepath.Join(t.TempDir(), "pi-go-stub")
+	if err := os.WriteFile(stub, []byte(stubScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("STUB_MODE", "writes")
+	// ExploreOnly as a caller would set it: worktree.Available said no.
+	s := &Subagent{Cwd: dir, Exe: stub, Isolation: IsolationShared, ExploreOnly: true}
+
+	props, _ := s.InputSchema()["properties"].(map[string]any)
+	mode, _ := props["mode"].(map[string]any)
+	if enum, _ := mode["enum"].([]string); !slices.Equal(enum, []string{ModeExplore, ModeEdit}) {
+		t.Errorf("mode enum = %v, want both modes: shared isolation needs no worktree", enum)
+	}
+
+	res, err := call(t, s, ModeEdit, "add a file")
+	if err != nil {
+		t.Fatalf("Execute in a plain directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "added.txt")); err != nil {
+		t.Errorf("the subagent's file is missing: %v", err)
+	}
+	if !strings.Contains(res.Text, "I added added.txt") {
+		t.Errorf("Text = %q, want the subagent's answer", res.Text)
+	}
+}
+
+// The child has to be told which of the two situations it is in, because the habits
+// differ in both directions: under a worktree it describes its changes and the
+// parent commits them, and here it has to name the paths it wrote because that is
+// the handover. It also has to know siblings may be in the directory with it, or it
+// will treat their files as debris.
+func TestSharedChildIsToldWhereItIs(t *testing.T) {
+	root, stub := repoFixture(t)
+	t.Setenv("STUB_MODE", "sharednote")
+	s := &Subagent{Cwd: root, Exe: stub, Isolation: IsolationShared}
+
+	res, err := call(t, s, ModeEdit, "run the analysis")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	// The last flag is the important one: the worktree preamble promises a commit
+	// that is not coming, so it leaking in would be worse than saying nothing.
+	const want = "note=fenced nogit=stated paths=stated siblings=stated leak=none"
+	if !strings.Contains(res.Text, want) {
+		t.Errorf("Text = %q, want %q", res.Text, want)
 	}
 }
 

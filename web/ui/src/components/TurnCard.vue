@@ -15,6 +15,13 @@ const props = defineProps<{
   // read from a module-level store so the components stay testable in isolation.
   skills?: { name: string; path: string }[];
   cwd?: string;
+  /**
+   * todoPinned says the plan is already on screen in the bar above the composer,
+   * so the inline task-list card should collapse to a line like a superseded one.
+   * Threaded down rather than read from a store for the same reason the two above
+   * are: the components stay testable in isolation.
+   */
+  todoPinned?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -48,6 +55,7 @@ const thinkingOpen = ref(false);
       :run-active="runActive"
       :skills="skills"
       :cwd="cwd"
+      :todo-pinned="todoPinned"
       @suggest="emit('suggest', $event)"
       @decide="emit('decide', $event)"
       @freeze="emit('freeze', $event)"
@@ -67,10 +75,15 @@ const thinkingOpen = ref(false);
 </template>
 
 <style scoped lang="scss">
+/* The rule down the left is a guide, not a divider: it groups a turn's tool calls
+   with the answer they produced, so it only has to be visible enough to be
+   followed. The streaming turn gets the accent, which makes "where is it working"
+   answerable from the shape of the page rather than from reading it. */
 .turn {
   border-left: 2px solid var(--el-border-color-lighter);
-  padding: 6px 0 6px 12px;
-  margin: 10px 0;
+  padding: 6px 0 8px 14px;
+  margin: 14px 0;
+  transition: border-color var(--pg-transition);
 
   &.streaming {
     border-left-color: var(--el-color-primary);
@@ -82,11 +95,37 @@ const thinkingOpen = ref(false);
   align-items: center;
   gap: 8px;
   font-size: 11px;
-  color: var(--el-text-color-secondary);
+  font-variant-numeric: tabular-nums;
+  color: var(--el-text-color-placeholder);
 }
 
 .live {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: var(--el-color-primary);
+
+  /* The dot is the part that says "now": a word alone reads as a label that could
+     have been left behind by a finished turn. */
+  &::before {
+    content: "";
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentcolor;
+    animation: turn-live 1.2s ease-in-out infinite;
+  }
+}
+
+@keyframes turn-live {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.25;
+  }
 }
 
 .thinking {
@@ -99,45 +138,108 @@ const thinkingOpen = ref(false);
   color: var(--el-text-color-secondary);
   font-size: 11px;
   cursor: pointer;
-  padding: 0;
+  padding: 2px 7px 2px 4px;
+  border-radius: 6px;
+  transition: background var(--pg-transition);
+
+  &:hover {
+    background: var(--el-fill-color-light);
+    color: var(--el-text-color-primary);
+  }
 }
 
 .thinking-body {
-  margin: 4px 0 6px 12px;
-  font-size: 12px;
-  line-height: 1.6;
+  margin: 4px 0 8px 6px;
+  font-size: 12.5px;
+  line-height: 1.7;
   color: var(--el-text-color-secondary);
   white-space: pre-wrap;
   border-left: 1px dashed var(--el-border-color);
-  padding-left: 10px;
+  padding-left: 12px;
 }
 
 .answer {
-  margin-top: 6px;
+  margin-top: 8px;
   font-size: 14px;
-  line-height: 1.7;
+  line-height: 1.75;
+  color: var(--el-text-color-primary);
 
   :deep(p) {
-    margin: 0.4em 0;
+    margin: 0.55em 0;
+  }
+
+  /* Headings inside an answer are section markers in a paragraph of chat, not page
+     titles: they get weight and space above, not size. Left at the framework's
+     default they came out larger than the composer's own labels, which made a
+     three-heading answer look like a document someone pasted in. */
+  :deep(h1),
+  :deep(h2),
+  :deep(h3),
+  :deep(h4) {
+    margin: 1.1em 0 0.4em;
+    font-size: 1em;
+    font-weight: 650;
+    line-height: 1.5;
+  }
+
+  :deep(h1) {
+    font-size: 1.12em;
+  }
+
+  :deep(h2) {
+    font-size: 1.06em;
   }
 
   :deep(pre) {
-    background: var(--el-fill-color-light);
-    padding: 8px 10px;
-    border-radius: 6px;
+    background: var(--el-fill-color-lighter);
+    border: 1px solid var(--el-border-color-extra-light);
+    padding: 10px 12px;
+    border-radius: 10px;
     overflow-x: auto;
-    font: 12px/1.55 ui-monospace, monospace;
+    font: 12px/1.6 var(--pg-mono);
   }
 
   :deep(code) {
-    font-family: ui-monospace, monospace;
-    font-size: 0.92em;
+    font-family: var(--pg-mono);
+    font-size: 0.9em;
+  }
+
+  /* Inline code only: a tinted tile inside a code block would draw a second box
+     around every line. */
+  :deep(:not(pre) > code) {
+    padding: 1px 5px;
+    border-radius: 5px;
+    background: var(--el-fill-color-light);
+    color: var(--el-color-primary-dark-2);
+  }
+
+  :deep(a) {
+    color: var(--el-color-primary-dark-2);
+    text-decoration-color: var(--pg-accent-line);
+    text-underline-offset: 2px;
+  }
+
+  :deep(blockquote) {
+    margin: 0.6em 0;
+    padding: 2px 0 2px 12px;
+    border-left: 2px solid var(--el-border-color-light);
+    color: var(--el-text-color-regular);
+  }
+
+  :deep(hr) {
+    margin: 1.2em 0;
+    border: 0;
+    border-top: 1px solid var(--el-border-color-extra-light);
   }
 
   :deep(ul),
   :deep(ol) {
     padding-left: 1.4em;
-    margin: 0.4em 0;
+    margin: 0.5em 0;
+  }
+
+  :deep(li) {
+    margin: 0.2em 0;
   }
 
   /* markdown-it renders GFM tables but the UA stylesheet draws no borders on
@@ -156,13 +258,14 @@ const thinkingOpen = ref(false);
 
   :deep(th),
   :deep(td) {
-    border: 1px solid var(--el-border-color);
-    padding: 4px 10px;
+    border: 1px solid var(--el-border-color-light);
+    padding: 5px 11px;
     text-align: left;
   }
 
   :deep(th) {
-    background: var(--el-fill-color-light);
+    background: var(--el-fill-color-lighter);
+    font-weight: 600;
   }
 }
 </style>

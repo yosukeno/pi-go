@@ -376,9 +376,12 @@ function startDrag(e: MouseEvent) {
   }
 
   &.open {
-    /* Pure black divider: on an all-white panel the light-grey line read as
-       no boundary at all. */
-    border-left: 1px solid #000;
+    /* A definite divider, because this is the one edge in the layout with content
+       of a different kind on both sides. It used to be pure black — the
+       light-grey line read as no boundary at all on two adjacent white panels —
+       and with the warm palette a dark warm line does the same job without
+       drawing a hard rule across the window. */
+    border-left: 1px solid var(--el-border-color-darker);
   }
 
   /* Bottom dock: sized by height, grip on the top edge. In the grid shell the
@@ -392,7 +395,7 @@ function startDrag(e: MouseEvent) {
     }
 
     &.open {
-      border-top: 1px solid #000;
+      border-top: 1px solid var(--el-border-color-darker);
       border-left: 0;
     }
 
@@ -458,14 +461,14 @@ function startDrag(e: MouseEvent) {
 
 // The sheet rail: always visible, this is how sheets are opened at all.
 .rail {
-  flex: 0 0 40px;
+  flex: 0 0 44px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: 6px 0;
-  border-left: 1px solid var(--el-border-color-lighter);
-  background: var(--el-fill-color-lighter);
+  gap: 3px;
+  padding: 8px 0;
+  border-left: 1px solid var(--el-border-color-extra-light);
+  background: var(--el-bg-color-page);
 }
 
 .rail-btn {
@@ -475,19 +478,29 @@ function startDrag(e: MouseEvent) {
   width: 32px;
   height: 32px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 9px;
   background: transparent;
   color: var(--el-text-color-secondary);
   cursor: pointer;
+  transition:
+    background var(--pg-transition),
+    color var(--pg-transition);
 
   &:hover {
-    background: var(--el-fill-color);
+    background: var(--el-fill-color-light);
     color: var(--el-text-color-primary);
   }
 
+  /* The open sheet's button reads as a lit tab: a white tile lifted off the
+     rail's paper, matching how the active session is drawn in the sidebar. Its
+     predecessor was a darker grey fill, which looked pressed rather than
+     selected. */
   &.on {
-    background: var(--el-fill-color-darker);
-    color: var(--el-text-color-primary);
+    background: var(--el-bg-color);
+    color: var(--el-color-primary-dark-2);
+    box-shadow:
+      var(--el-box-shadow-lighter),
+      inset 0 0 0 1px var(--el-border-color-lighter);
   }
 }
 
@@ -508,8 +521,8 @@ function startDrag(e: MouseEvent) {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--el-border-color-lighter);
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--el-border-color-extra-light);
   background: var(--el-bg-color);
   flex: 0 0 auto;
 }
@@ -524,16 +537,17 @@ function startDrag(e: MouseEvent) {
   gap: 6px;
   border: 0;
   background: transparent;
-  padding: 3px 6px;
-  border-radius: 4px;
+  padding: 4px 8px;
+  border-radius: 7px;
   font: inherit;
   font-size: 12px;
   font-weight: 600;
   color: var(--el-text-color-primary);
   cursor: pointer;
+  transition: background var(--pg-transition);
 
   &:hover {
-    background: var(--el-fill-color);
+    background: var(--el-fill-color-light);
   }
 
   .tenant-name {
@@ -565,12 +579,12 @@ function startDrag(e: MouseEvent) {
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border-radius: 4px;
+  border-radius: 7px;
   font-size: 13px;
   cursor: pointer;
 
   &:hover {
-    background: var(--el-fill-color);
+    background: var(--el-fill-color-light);
   }
 
   &.active {
@@ -594,14 +608,17 @@ function startDrag(e: MouseEvent) {
   display: inline-flex;
   border: 0;
   background: transparent;
-  padding: 4px;
-  border-radius: 4px;
+  padding: 5px;
+  border-radius: 7px;
   font-size: 14px;
   color: var(--el-text-color-secondary);
   cursor: pointer;
+  transition:
+    background var(--pg-transition),
+    color var(--pg-transition);
 
   &:hover {
-    background: var(--el-fill-color);
+    background: var(--el-fill-color-light);
     color: var(--el-text-color-primary);
   }
 }

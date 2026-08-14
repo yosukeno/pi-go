@@ -83,9 +83,9 @@ function meta(m: PolicyMode) {
   align-items: center;
   gap: 5px;
   height: 30px;
-  padding: 0 10px;
+  padding: 0 11px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   font-size: 13px;
   font-weight: 600;

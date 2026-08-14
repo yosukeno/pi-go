@@ -1,11 +1,14 @@
 package main
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"strconv"
 
 	"github.com/yosukeno/pi-go/config"
 	"github.com/yosukeno/pi-go/tools"
+	"github.com/yosukeno/pi-go/worktree"
 )
 
 // toolOptions decides which tools this process gets.
@@ -53,7 +56,14 @@ func toolOptions(cwd, model string, readRoots, writeRoots []string) tools.Option
 	// here would be told its worktree is the main checkout and would refuse
 	// everything, including the reads it is supposed to allow.
 	if depth > 0 && !o.ReadOnly {
-		o.Guard = &tools.Guard{Worktree: cwd, MainCheckout: os.Getenv(tools.EnvMainCheckout)}
+		o.Guard = &tools.Guard{
+			Worktree: cwd, MainCheckout: os.Getenv(tools.EnvMainCheckout),
+			// From the environment for the same reason the depth and read-only
+			// markers are: the parent decided it, and a child that could talk its
+			// way into the other wording would be told a comforting untruth about
+			// where its commits would land.
+			Shared: os.Getenv(tools.EnvSubagentShared) == "1",
+		}
 	}
 	// Registered only while there is room to nest. Not registering it is a stronger
 	// bound than refusing the call: a tool that is absent costs no schema tokens
@@ -65,6 +75,10 @@ func toolOptions(cwd, model string, readRoots, writeRoots []string) tools.Option
 	if depth < tools.DefaultSubagentMaxDepth && !o.ReadOnly {
 		// MaxTurns is deliberately absent: see Subagent.MaxTurns. The parent's turn
 		// limit bounds the parent's run, and the child's is a different run.
+		// Both env settings are validated in main before anything runs, so the errors
+		// here cannot be new information; the safe value comes back with them.
+		isolation, _ := tools.IsolationFromEnv()
+		concurrency, _ := tools.ConcurrencyFromEnv()
 		o.Subagent = &tools.Subagent{
 			Cwd: cwd, Model: model, Depth: depth,
 			// Resolved here rather than inside the tool so that package tools keeps
@@ -72,9 +86,45 @@ func toolOptions(cwd, model string, readRoots, writeRoots []string) tools.Option
 			// config names one, in which case explore children run it instead.
 			ExploreModel: config.SubagentModel(model),
 			ExplorePool:  explorePool(),
+			Isolation:    isolation,
+			Concurrency:  concurrency,
+			// Asked once, here, because this is where the working directory is known
+			// and package tools does no git. Set unconditionally: whether a missing
+			// repository actually withholds edit mode depends on the isolation, and
+			// Subagent.exploreOnly is the one place that combines them.
+			ExploreOnly: !worktree.Available(cwd),
 		}
 	}
 	return o
+}
+
+// checkSubagentEnv validates the two environment settings that shape delegation,
+// and announces the one that changes a safety property.
+//
+// The notice is not decoration. Shared isolation removes the guarantee that a
+// delegated run cannot touch the working directory, and it is switched on by an
+// environment variable — the least visible place a decision can live. An operator
+// who inherited a wrapper script, a compose file or a Dockerfile from someone else
+// should not have to read them to find out. Printed to the same stream as the other
+// startup notices, and only when the setting is not the default, so an ordinary run
+// is unchanged.
+//
+// Silent for a child process: it prints once per session, not once per delegation,
+// and a child has no subagent tool for the setting to affect anyway.
+func checkSubagentEnv(notices io.Writer) error {
+	isolation, err := tools.IsolationFromEnv()
+	if err != nil {
+		return err
+	}
+	if _, err := tools.ConcurrencyFromEnv(); err != nil {
+		return err
+	}
+	if isolation == tools.IsolationShared && subagentDepth() == 0 {
+		fmt.Fprintf(notices, "pi-go: %s=%s — edit subagents will work directly in this "+
+			"directory, with no isolated worktree and no commit. Their changes are immediate "+
+			"and cannot be reviewed before they land.\n", tools.EnvIsolation, tools.IsolationShared)
+	}
+	return nil
 }
 
 // subagentDepth reads how deep this process is.

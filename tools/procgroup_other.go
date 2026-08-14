@@ -10,7 +10,10 @@ import "os/exec"
 // than to be used.
 func setProcessGroup(*exec.Cmd) {}
 
-func killGroup(cmd *exec.Cmd) error {
+// KillGroup is exported for the same reason it is split by platform: the web
+// terminal kills a pty's shell and every child it started, and that is the same
+// question the bash tool asks, so it should not be a second answer.
+func KillGroup(cmd *exec.Cmd) error {
 	if cmd.Process == nil {
 		return nil
 	}

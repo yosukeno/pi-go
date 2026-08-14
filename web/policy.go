@@ -96,6 +96,12 @@ func (p *Policy) AllowTool(name string) PolicyState {
 // people something is being blocked. An exact string has no syntax left to
 // subvert, and it still fixes the fatigue case of the same `go build ./...`
 // twenty times in one session.
+//
+// The argument is a grant key, not necessarily a command: the gate passes
+// grantKeyOf, which folds in bash's workdir. A caller with only a command string —
+// the HTTP endpoint, where that is all the request can carry — therefore grants the
+// default-directory form and nothing else, which is the honest reading of what it
+// asked for.
 func (p *Policy) AllowCommand(cmd string) PolicyState {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -139,7 +145,7 @@ func (p *Policy) Decide(req agent.GateRequest) (rule string, auto bool) {
 	if p.allowTool[req.ToolName] {
 		return "session:tool:" + req.ToolName, true
 	}
-	if cmd := commandOf(req.Args); cmd != "" && p.allowCmd[cmd] {
+	if key := grantKeyOf(req.Args); key != "" && p.allowCmd[key] {
 		return "session:command", true
 	}
 	if !p.reviewsLocked(req.ToolName) {
@@ -164,8 +170,8 @@ func (p *Policy) reviewsLocked(tool string) bool {
 	}
 }
 
-// commandOf pulls the command out of bash arguments, for the exact-match grant
-// and for the danger highlight.
+// commandOf pulls the command out of bash arguments, for the danger highlight and
+// for anything that wants to show the user what was asked for.
 func commandOf(args json.RawMessage) string {
 	var a struct {
 		Command string `json:"command"`
@@ -174,6 +180,39 @@ func commandOf(args json.RawMessage) string {
 		return ""
 	}
 	return strings.TrimSpace(a.Command)
+}
+
+// grantKeyOf is what an "always allow this command" grant is stored under.
+//
+// The command plus its workdir, not the command alone, and the difference is a real
+// one rather than tidiness. Before bash had a workdir parameter, "always allow `go
+// build ./...`" could only ever mean "in the session's directory", because there was
+// nowhere else for it to run. Keying on the command alone now would silently promote
+// that same click to "in any directory the agent names" — a widening the user was
+// never shown and could not have intended.
+//
+// So a grant made for a bare command does not cover a workdir'd call, and one made
+// for a workdir'd call does not cover the bare form. That is the same standard
+// AllowCommand already holds itself to: exact text, no generalisation.
+//
+// NUL is the separator because it cannot occur in either field — both come out of a
+// JSON string, and a NUL would have had to survive as an escape.
+func grantKeyOf(args json.RawMessage) string {
+	var a struct {
+		Command string `json:"command"`
+		Workdir string `json:"workdir"`
+	}
+	if json.Unmarshal(args, &a) != nil {
+		return ""
+	}
+	cmd := strings.TrimSpace(a.Command)
+	if cmd == "" {
+		return ""
+	}
+	if dir := strings.TrimSpace(a.Workdir); dir != "" {
+		return cmd + "\x00" + dir
+	}
+	return cmd
 }
 
 // dangerPatterns is a list for highlighting an approval card in red.

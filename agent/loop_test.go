@@ -220,35 +220,70 @@ func TestFailingCallDoesNotCancelSiblings(t *testing.T) {
 	}
 }
 
-// --- 3. sequential tools serialize the whole batch ---
+// --- 3. a sequential call runs alone; its parallel siblings still overlap ---
 
-func TestSequentialToolSerializesBatch(t *testing.T) {
+// Both halves matter, and this is the test that stops each from being "fixed" by
+// giving up the other.
+//
+// The promise a sequential tool is making is that it runs alone — bash writes with
+// arbitrary shell commands, which never pass the file tools' per-path lock, so no
+// sibling may be reading a file it is about to rewrite. That is the first assertion.
+//
+// It used to be delivered by serializing the entire batch, which also stopped the
+// reads in that batch from overlapping *each other*, and they were never the
+// problem. That is the second assertion, and without it the whole change could be
+// reverted and the suite would stay green.
+//
+// The order "par, par, seq, par" is chosen so the sequential call sits in the middle:
+// it also has to act as a barrier, so the trailing call cannot overlap the leading
+// ones by joining their segment.
+func TestSequentialCallRunsAloneAndParallelSiblingsStillOverlap(t *testing.T) {
 	var mu sync.Mutex
-	var overlaps int
-	inFlight := 0
-	track := func(ctx context.Context, _ json.RawMessage) (tools.Result, error) {
-		mu.Lock()
-		inFlight++
-		if inFlight > 1 {
-			overlaps++
+	inFlight, maxInFlight, seqInFlight, seqOverlaps := 0, 0, 0, 0
+	track := func(name string) func(context.Context, json.RawMessage) (tools.Result, error) {
+		return func(context.Context, json.RawMessage) (tools.Result, error) {
+			mu.Lock()
+			inFlight++
+			if name == "seq" {
+				seqInFlight++
+			}
+			if seqInFlight > 0 && inFlight > 1 {
+				seqOverlaps++
+			}
+			if inFlight > maxInFlight {
+				maxInFlight = inFlight
+			}
+			mu.Unlock()
+			time.Sleep(20 * time.Millisecond)
+			mu.Lock()
+			inFlight--
+			if name == "seq" {
+				seqInFlight--
+			}
+			mu.Unlock()
+			return tools.Result{Text: "ok"}, nil
 		}
-		mu.Unlock()
-		time.Sleep(20 * time.Millisecond)
-		mu.Lock()
-		inFlight--
-		mu.Unlock()
-		return tools.Result{Text: "ok"}, nil
 	}
 
-	par := &fakeTool{name: "par", mode: tools.Parallel, run: track}
-	seq := &fakeTool{name: "seq", mode: tools.Sequential, run: track}
-	c := &fakeClient{responses: []llm.Response{toolCalls("par", "par", "seq")}}
+	par := &fakeTool{name: "par", mode: tools.Parallel, run: track("par")}
+	seq := &fakeTool{name: "seq", mode: tools.Sequential, run: track("seq")}
+	c := &fakeClient{responses: []llm.Response{toolCalls("par", "par", "seq", "par")}}
 	a := New(Config{Client: c, Registry: tools.NewRegistry(par, seq)})
 
 	drain(a.Run(context.Background(), "go"))
 
-	if overlaps != 0 {
-		t.Errorf("observed %d overlapping executions; one sequential tool must serialize the batch", overlaps)
+	if seqOverlaps != 0 {
+		t.Errorf("the sequential call overlapped a sibling %d time(s); it must run alone", seqOverlaps)
+	}
+	if maxInFlight < 2 {
+		t.Errorf("max concurrent = %d; the parallel siblings must still overlap each other, "+
+			"otherwise one sequential call is again serializing the whole batch", maxInFlight)
+	}
+	if got := len(par.callArgs()); got != 3 {
+		t.Errorf("ran %d parallel calls, want 3: every tool_use needs its result", got)
+	}
+	if got := len(seq.callArgs()); got != 1 {
+		t.Errorf("ran %d sequential calls, want 1", got)
 	}
 }
 

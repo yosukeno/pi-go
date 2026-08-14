@@ -33,22 +33,32 @@ func splitLines(s string) []string {
 
 // TruncateHead keeps the first lines, for file reads.
 func TruncateHead(s string) Truncation {
+	return TruncateHeadLimit(s, MaxLines, MaxBytes)
+}
+
+// TruncateHeadLimit is TruncateHead against limits the caller chooses.
+//
+// It exists for the multi-file read, which has to divide one call's budget among
+// its files: five files against the full limit each is five times the ceiling this
+// package exists to enforce, and the ceiling is what stops one tool result from
+// swallowing the context window.
+func TruncateHeadLimit(s string, maxLines, maxBytes int) Truncation {
 	lines := splitLines(s)
-	if len(lines) <= MaxLines && len(s) <= MaxBytes {
+	if len(lines) <= maxLines && len(s) <= maxBytes {
 		return Truncation{Content: s, TotalLines: len(lines), OutputLines: len(lines)}
 	}
 	by := "lines"
 	bytes := 0
-	kept := make([]string, 0, MaxLines)
+	kept := make([]string, 0, min(maxLines, len(lines)))
 	for i, line := range lines {
-		if i >= MaxLines {
+		if i >= maxLines {
 			break
 		}
 		n := len(line)
 		if i > 0 {
 			n++
 		}
-		if bytes+n > MaxBytes {
+		if bytes+n > maxBytes {
 			by = "bytes"
 			break
 		}

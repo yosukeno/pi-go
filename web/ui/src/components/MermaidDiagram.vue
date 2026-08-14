@@ -3,7 +3,8 @@ import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Check, CopyDocument, Download, FullScreen } from "@element-plus/icons-vue";
 import CodeBlock from "./CodeBlock.vue";
-import { renderMermaid } from "./mermaidRuntime";
+import { renderMermaid, resetMermaidTheme } from "./mermaidRuntime";
+import { isDark, themeVersion } from "@/theme";
 
 const MAX_SOURCE_BYTES = 64 * 1024;
 const MAX_SOURCE_LINES = 1_000;
@@ -55,6 +56,12 @@ function toCSS([red, green, blue]: [number, number, number]): string {
  * readable without the heavy blocks the model tends to emit.
  */
 function softenPalette() {
+  // Lightening is for a light canvas only. On a dark skin the node fill *is* dark
+  // — it comes from the skin — so the same pass would bleach every box into a pale
+  // tile floating on a dark page, which is the diagram looking broken rather than
+  // dense. The text-contrast pass below still runs: it is about the fill that
+  // ended up on screen, whichever skin chose it.
+  const soften = !isDark.value;
   const nodes = canvas.value?.querySelectorAll<SVGGElement>("svg g.node") ?? [];
   for (const node of nodes) {
     const shapes = node.querySelectorAll<SVGGraphicsElement>("rect, circle, ellipse, polygon, path");
@@ -62,7 +69,8 @@ function softenPalette() {
     for (const shape of shapes) {
       const fill = readRGB(getComputedStyle(shape).fill);
       if (!fill) continue;
-      const softened = luminanceOf(fill) < DARK_FILL_LUMINANCE ? lighten(fill, LIGHTEN_TOWARDS_WHITE) : fill;
+      const softened =
+        soften && luminanceOf(fill) < DARK_FILL_LUMINANCE ? lighten(fill, LIGHTEN_TOWARDS_WHITE) : fill;
       if (softened !== fill) {
         shape.style.fill = toCSS(softened);
         shape.style.stroke = toCSS(darken(softened, BORDER_DARKEN));
@@ -205,7 +213,17 @@ function onKeydown(event: KeyboardEvent) {
   }
 }
 
-watch(() => props.source, render, { immediate: true });
+// The skin is a render input, not a style: mermaid writes its colours into the SVG
+// it returns, so a diagram on screen has to be produced again to change. Resetting
+// the runtime first is what makes the new render read the new tokens.
+watch(
+  [() => props.source, themeVersion],
+  ([source], previous) => {
+    if (previous && previous[1] !== themeVersion.value) resetMermaidTheme();
+    void render(source as string);
+  },
+  { immediate: true },
+);
 onMounted(() => {
   document.addEventListener("fullscreenchange", syncFullscreen);
   window.addEventListener("keydown", onKeydown);

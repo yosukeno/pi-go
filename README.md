@@ -234,13 +234,38 @@ pi-go -mode json -p "..." | jq -r 'select(.type=="run_end") | .end_reason'
 | 交回 | 一段答案 | 一段答案 + 一个 commit |
 | 需要 git 仓库 | 否 | 是 |
 
+上表描述的是默认的 worktree 隔离。`PIGO_SUBAGENT_ISOLATION=shared` 会把 `edit` 那一列换掉,见下面单独一节——那是一次显式的取舍,不是一个调优项。
+
 **explore 不建 worktree,这是结论不是优化。** 一个没有 bash、没有 write、没有 edit 的会话改不了任何东西——隔离由「工具不在」提供,是结构性的,不靠任何检查。既然没有要保护的,worktree 就只剩代价;而且它有一个真实的代价:worktree 从 HEAD 加一份已跟踪文件的 diff 建起来,所以**你刚创建还没提交的文件根本不在里面**。让一个 explore 子去解释某个模块怎么工作,它会对着一份缺了最新部分的代码库回答。跑在你自己的目录里就没这个问题——它读到的和你读到的是同一批文件。
 
 顺带的结果:explore 在非 git 目录里也能用,edit 不能。
 
 **edit 的成果以 commit 形式交回,不落到你的工作区。** 子改完的东西被提交并钉在 `refs/pi-go/sub/<id>`(不在 `refs/heads/` 下,`git branch` 看不到),父拿到的是 SHA 和一句可以直接执行的提示:`git show <ref>` 看,`git cherry-pick <sha>` 应用。要不要合回是一次显式决定——在 `-web` 下 `git cherry-pick` 走 bash,所以那一步照样要过审批。
 
-要注意的是「跑一遍测试然后告我哪里挂了」属于 **edit**,尽管它不打算改任何东西:测试会写构建产物、临时文件和缓存。规则是 **有 bash 就要有 worktree**——一个在你自己目录里持有 bash 的子进程等于没有隔离,不管它别的工具是什么。所以这两个模式之间没有有用的第三档。
+要注意的是「跑一遍测试然后告我哪里挂了」属于 **edit**,尽管它不打算改任何东西:测试会写构建产物、临时文件和缓存。规则是 **有 bash 就要有 worktree**——一个在你自己目录里持有 bash 的子进程等于没有隔离,不管它别的工具是什么。所以在**改代码**这件事上,这两个模式之间没有有用的第三档。
+
+### `PIGO_SUBAGENT_ISOLATION=shared`:一个显式放弃隔离的开关
+
+上面那条规则有一个前提:委派出去的活是在改一个代码库。有一类负载不是,而 worktree 对它错了两次——把四个恶意样本各跑一遍反编译是逼出这个开关的那个例子。它需要 bash,所以只能是 edit 模式;但**检出从 HEAD 起算,拿不到父的未提交输入**,而且**子的产出会被提交成 commit、检出目录随即删掉**,父要的是能直接读的文件,拿到的却是一个 hash。
+
+```bash
+PIGO_SUBAGENT_ISOLATION=shared pi-go -web        # 默认是 worktree
+PIGO_SUBAGENT_CONCURRENCY=3                       # 默认 2,上限见下
+```
+
+置为 `shared` 后,edit 子跑在**父自己的目录**里:看得见未提交文件,写下的东西当场就在,没有 commit 也没有要 apply 的东西。`explore` 完全不变。非 git 目录也能用 edit——它不再需要仓库。
+
+**这是一次显式的放弃,不是一个优化。** 必须写清楚放弃了什么:
+
+- **子之间没有隔离。** `write` / `edit` 仍然按路径串行(`withFileLock`),但 **`bash` 根本不走那把锁**,所以两个子在同一棵树里跑构建仍然可能交织。缓解手段只有一个:派发时给每个子**各自的输出路径**,并写进任务文本。工具描述里会把这句话交给模型。
+- **没有回滚。** 什么都没提交,所以一个删掉父未提交工作的子,就是删掉了。
+- **git 禁令反而更重要。** 这个模式下一条走漏的 `git commit` 会落进用户自己的仓库、自己的分支、混在自己的未提交改动里,而不是落在一个父会先验身份的一次性检出上。禁令是无条件的,只有拒绝理由的措辞换了一份对这个模式为真的。
+
+启动时会往 stderr 打一行提示,只在非默认值时打——因为环境变量是一个决定能待的最不显眼的地方,继承了别人的 compose 文件的人不该靠读它才发现。拼错(`shard`)是**启动失败**而不是静默回落:静默回落会让人确信共享模式开着,然后在产出里找到 commit。
+
+`PIGO_SUBAGENT_CONCURRENCY` 的上限由审批预算的算术决定,不是随便挑的:`运行超时/2 + N×闸门超时 ≤ 运行超时`。默认的 30m / 5m 下 N ≤ 3,给 4 会在启动时被 `web.CheckApprovalBudget` 直接拒掉,并告诉你要把 `-gate-timeout` 压到多少。
+
+**报价**(实测,不是估的):subagent 的描述 + schema 每轮重发一次,worktree 下 **2017 B(~504 tok)**,shared 下 **2175 B(~543 tok)**,差 **+158 B / ~+39 tok**。这笔钱只有开了 shared 的部署付;默认路径逐字未变。`ExploreOnly` 生效时反而降到 **1875 B**——它砍掉的 edit 段比换上的那句长。
 
 **子的工具集和父不一样,这个不对称就是安全属性:**
 
@@ -725,15 +750,50 @@ switched to glm-5.2 (zhipu), 2 messages carried over
 
 | 工具 | 参数 | 说明 |
 |---|---|---|
-| `read` | `path`, `offset?`, `limit?` | 读文件，超过 2000 行或 50KB 截断并提示用 `offset` 续读 |
+| `read` | `path` \| `paths[]`, `offset?`, `limit?` | 读文件，超过 2000 行或 50KB 截断并提示用 `offset` 续读。`paths` 一次读多个文件（额度均分，见下） |
 | `ls` | `path?`, `limit?` | 列一层目录，目录带 `/`，含点文件，500 条或 50KB 截断 |
 | `find` | `pattern`, `path?`, `limit?` | 按 glob 找文件。含 `/` 时匹配相对路径，否则匹配文件名。默认 200 条 |
 | `grep` | `pattern`, `path?`, `include?`, `limit?` | Go 正则搜内容，输出 `path:line:text`。`(?i)` 开头即不分大小写。跳过二进制和 8MB 以上的文件，默认 100 条匹配 |
 | `write` | `path`, `content` | 写文件，自动建父目录 |
 | `edit` | `path`, `edits[{oldText,newText}]` | 精确字符串替换，`oldText` 必须唯一匹配 |
-| `bash` | `command`, `timeout?` | 执行命令，默认 120 秒超时，输出保留末尾 2000 行 / 50KB。**输出边跑边显示**，见下 |
+| `bash` | `command`, `workdir?`, `timeout?` | 执行命令，默认 120 秒超时，输出保留末尾 2000 行 / 50KB。**输出边跑边显示**，见下。`workdir` 换执行目录，见下 |
 
 **参数会先按 schema 校验再执行**，而且在审批闸门之前 —— 一个缺字段的调用无论怎么批准都跑不起来。错误里会点名缺哪个字段、列出这个工具接受的全部字段，拼错时还会给线索（`file_path` → 「你是不是想写 path」）。未知字段一律容忍：模型常加些无害的额外键，为此废掉一轮不值得。
+
+### `bash` 的 `workdir`：比 `cd x && ...` 好的那个答案
+
+每次调用都是一个新的 `bash -c`，`cd` 和环境变量都不跨调用。这一点两家大厂给了两个不同的答案，pi-go 跟的是后一个：
+
+- **Anthropic 的 Claude Code 让 cwd 持久**。主会话里 `cd` 之后，后续 Bash 命令还在那个目录，只要没跑出项目目录或 `--add-dir` 加的目录；跑出去就重置回项目目录，并在结果里追加一行 `Shell cwd was reset to <dir>`。子代理会话从不继承目录变更。可以用 `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1` 关掉这个继承。环境变量仍然不持久。（[Claude Code 工具参考](https://code.claude.com/docs/en/tools-reference)，内容已转述以符合许可要求）
+- **OpenAI 的 Codex 不持久，而是给 `workdir` 参数**，和 `command`、`timeout_ms` 并列。它甚至是 `required` 的——那是 strict schema 要求「每个 property 都得进 required」的后果，不是「每次调用都该显式给目录」的判断。（[Codex issue #524](https://github.com/openai/codex/issues/524) 里那条 schema 报错正好暴露了这个形状）
+
+pi-go 的 bash 本来就是每次新进程，所以 Codex 那个答案是匹配的那个：
+
+```json
+{"command": "make", "workdir": "sub"}
+```
+
+相对路径按工作目录解析，绝对路径直接用。**不设为 required**：那会让每一次调用都带一个多余的 `"."`，而且现存 transcript 会全部不再符合 schema。
+
+三件必须写清的事：
+
+- **它不过路径守卫，这是有意的。** bash 从来没有路径限制（`tools/tool.go` 的注释里写明了），而在 `workdir` 上加一道、命令串里的 `cd /etc` 又照样能跑，那是一道读起来像边界但不是边界的限制，还会拒掉这个参数本来要服务的场景——在隔壁 checkout 里跑一次构建。bash 真正的边界是容器。
+- **但它必须过 subagent 的守卫。** 守卫拦 `cd` 靠的是从命令文本里解析出绝对路径目标，而 `workdir` 到达同一个地方却从不出现在那段文本里。不补这一道检查，加这个参数就等于给子代理开了一个「长得像普通参数」的越界出口。`Guard.CheckDir` 就是这道检查，测试直接跑工具而不是调守卫。
+- **它参与「总是允许这条命令」的键。** 在有 `workdir` 之前，「总是允许 `go build ./...`」只可能意味着「在会话目录里」，因为没有别的地方可跑。继续只按命令串做键，就会把当初那一次点击悄悄提升成「在 agent 说出的任何目录里」——一次用户没被展示、也不可能有意做出的放宽。所以键是 `命令 + workdir`；给裸命令做的授权不覆盖带 `workdir` 的调用，反之亦然。
+
+目录不存在或指向一个文件，都由工具本身报错，不让 bash 起不来。差别对模型是实的：`chdir: no such file or directory` 加 exit code -1 描述的是这个 harness，而一条点名解析后的绝对路径和解析基准的消息描述的是那个错误。命令实际跑在非默认目录时，`BashDetails.workdir` 会记下解析后的绝对路径，界面上也会显示——只在非默认时显示，因为每次都播报默认值等于什么都没说。
+
+### `read` 的 `paths[]`：一次调用读多个文件
+
+```json
+{"paths": ["a.go", "b.go", "sub/c.go"]}
+```
+
+`path` 和 `paths` 二选一（`offset` / `limit` 只跟 `path` 配对）。**额度均分而不是每个文件一份**：五个文件各拿满上限就是五倍上限，而这个上限的存在意义就是防止一个 tool_result 吃掉上下文窗口。一个路径失败不让整次调用失败——那正好浪费掉这次调用本来要省的那趟往返；全部失败才返回 error。
+
+值得记一条：**Anthropic 和 OpenAI 的 read 都是单文件的**，`paths[]` 是 pi-go 自己的扩展。两家在「一次调用做更多事」上的官方答案是 shell 那一侧（Codex 的 `commands[]` 数组 + 逐条 outcome），而那条 pi-go 因为审批闸门否决了（见 `docs/tool-batching-and-parallelism.md` §5.D）。
+
+界面上多文件读现在有自己的卡片：文件列表 + 每个文件的行数 / 截断 / 失败标记，点开看单个文件的内容（带语法高亮和行号）。**内容是按工具记录的字节区间切出来的，不是把拼接文本再解析回去。** 后者有一个不能有的失败模式：一个文件的内容里如果出现 `==> other.go <==` 这样一行，它的分段会提前结束，剩下的被算到下一个文件名下——把一个文件的片段挂在另一个文件的名字下面，比什么都不显示更糟。区间由写文本的同一段代码算出来，所以不可能和格式脱节。
 
 **`bash` 的输出边跑边显示**，所以 `go test` 跑一分钟时能看出是在跑还是卡了：
 
@@ -1535,13 +1595,38 @@ It solves context pollution: exploring an unfamiliar module, running a test suit
 | Hands back | an answer | an answer + a commit |
 | Requires a git repo | no | yes |
 
+The table describes the default, worktree isolation. `PIGO_SUBAGENT_ISOLATION=shared` replaces the `edit` column; see the section below — that is an explicit trade, not a tuning knob.
+
 **`explore` does not build a worktree — this is a conclusion, not an optimization.** A session with no bash, no write, no edit cannot change anything — isolation is provided by "the tools are absent," structurally, not by any check. With nothing to protect, a worktree would only add cost; and it has a real cost: a worktree is built from HEAD plus a diff of tracked files, so **files you just created and haven't committed are simply not in it**. Have an `explore` sub explain how some module works and it answers against a copy of the codebase missing its newest parts. Running in your own directory has no such problem — it reads the same files you do.
 
 A side effect: `explore` works in non-git directories; `edit` does not.
 
 **`edit`'s result comes back as a commit, not into your working tree.** What the sub changed is committed and pinned at `refs/pi-go/sub/<id>` (not under `refs/heads/`, so `git branch` does not see it); the parent gets a SHA and a line it can run directly: `git show <ref>` to look, `git cherry-pick <sha>` to apply. Whether to merge it back is an explicit decision — under `-web`, `git cherry-pick` goes through bash, so that step still goes through approval.
 
-Worth noting: "run the tests and tell me what failed" counts as **edit**, even though it has no intention of changing anything: tests write build artifacts, temp files, caches. The rule is **bash implies worktree** — a subprocess holding bash in your own directory means no isolation, regardless of its other tools. So there is no useful third gear between these two modes.
+Worth noting: "run the tests and tell me what failed" counts as **edit**, even though it has no intention of changing anything: tests write build artifacts, temp files, caches. The rule is **bash implies worktree** — a subprocess holding bash in your own directory means no isolation, regardless of its other tools. So for **changing code**, there is no useful third gear between these two modes.
+
+### `PIGO_SUBAGENT_ISOLATION=shared`: giving up isolation on purpose
+
+That rule assumes the delegated work is editing a codebase. Some workloads are not, and for those a worktree is wrong twice over — running four malware samples through a decompiler is the case that forced this switch. It needs bash, so it can only be `edit` mode; but **the checkout starts at HEAD, so it does not contain the parent's uncommitted inputs**, and **the child's output is committed and its directory then deleted**, so a parent that wanted files it could read gets a hash instead.
+
+```bash
+PIGO_SUBAGENT_ISOLATION=shared pi-go -web        # default is worktree
+PIGO_SUBAGENT_CONCURRENCY=3                       # default 2; ceiling below
+```
+
+Set to `shared`, an `edit` child runs in **the parent's own directory**: it sees uncommitted files, whatever it writes is simply there, and there is no commit and nothing to apply. `explore` is unchanged. A non-git directory works for `edit` too — it no longer needs a repository.
+
+**This is an explicit surrender, not an optimization.** What is given up has to be stated:
+
+- **No isolation between children.** `write` / `edit` still serialize per path (`withFileLock`), but **`bash` does not go through that lock at all**, so two children running a build in the same tree can still interleave. The only mitigation is to give each child **its own output path** and say so in the task; the tool description passes that instruction to the model.
+- **No undo.** Nothing is committed, so a child that deletes the parent's uncommitted work has deleted it.
+- **The git ban matters more, not less.** In this mode a stray `git commit` lands in the user's own repository, on their branch, mixed into their uncommitted work — rather than in a throwaway checkout the parent verifies first. The ban is unconditional; only the refusal's wording changes to one that is true here.
+
+A notice goes to stderr at startup, and only when the value is not the default — an environment variable is the least visible place a decision can live, and someone who inherited a compose file should not have to read it to find out. A typo (`shard`) is a **startup failure**, not a quiet fallback: a quiet fallback would leave someone convinced the shared mode is on, and then finding commits in the output.
+
+`PIGO_SUBAGENT_CONCURRENCY`'s ceiling comes from the approval-budget arithmetic, not from taste: `run timeout / 2 + N x gate timeout <= run timeout`. Under the default 30m / 5m that is N <= 3; 4 is refused at startup by `web.CheckApprovalBudget`, which tells you how far to lower `-gate-timeout`.
+
+**The price** (measured, not estimated): the subagent's description plus schema is resent every turn — **2017 B (~504 tok)** under worktree, **2175 B (~543 tok)** under shared, a difference of **+158 B / ~+39 tok**. Only a deployment that turns shared on pays it; the default path is unchanged byte for byte. With `ExploreOnly` in effect it actually drops to **1875 B** — the `edit` paragraph it removes is longer than the sentence it puts back.
 
 **The sub's tool set differs from the parent's, and that asymmetry is the security property:**
 
@@ -2022,15 +2107,50 @@ Nine, all under `tools/`. The table below is the seven resident ones; the eighth
 
 | Tool | Args | Description |
 |---|---|---|
-| `read` | `path`, `offset?`, `limit?` | read a file; truncated past 2000 lines or 50KB with a hint to continue via `offset` |
+| `read` | `path` \| `paths[]`, `offset?`, `limit?` | read a file; truncated past 2000 lines or 50KB with a hint to continue via `offset`. `paths` reads several in one call (budget split, see below) |
 | `ls` | `path?`, `limit?` | list one directory level; directories carry `/`, dotfiles included, truncated at 500 entries or 50KB |
 | `find` | `pattern`, `path?`, `limit?` | find files by glob. With `/` it matches the relative path, otherwise the filename. Default 200 entries |
 | `grep` | `pattern`, `path?`, `include?`, `limit?` | search content with a Go regex; output `path:line:text`. Leading `(?i)` is case-insensitive. Skips binary and files over 8MB; default 100 matches |
 | `write` | `path`, `content` | write a file; auto-creates parent directories |
 | `edit` | `path`, `edits[{oldText,newText}]` | exact string replacement; `oldText` must match uniquely |
-| `bash` | `command`, `timeout?` | run a command; default 120s timeout; output keeps the last 2000 lines / 50KB. **Output streams while running**, see below |
+| `bash` | `command`, `workdir?`, `timeout?` | run a command; default 120s timeout; output keeps the last 2000 lines / 50KB. **Output streams while running**, see below. `workdir` changes where it runs, see below |
 
 **Args are validated against the schema before execution**, and before the approval gate — a call with a missing field cannot run no matter what you approve. The error names the missing field, lists every field the tool accepts, and on a misspelling gives a hint (`file_path` → "did you mean path"). Unknown fields are always tolerated: the model often adds harmless extra keys, and wasting a turn over that is not worth it.
+
+### `bash`'s `workdir`: the better answer than `cd x && …`
+
+Every call is a fresh `bash -c`, so neither `cd` nor environment variables carry over. The two major vendors answer this differently, and pi-go follows the second:
+
+- **Anthropic's Claude Code makes cwd persist.** After a `cd` in the main session, later Bash commands stay in that directory as long as it is inside the project directory or one added with `--add-dir`; leaving those resets to the project directory and appends `Shell cwd was reset to <dir>` to the result. Subagent sessions never inherit a directory change. `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1` turns the carry-over off. Environment variables still don't persist. ([Claude Code tools reference](https://code.claude.com/docs/en/tools-reference); content was rephrased for compliance with licensing restrictions)
+- **OpenAI's Codex doesn't persist and gives a `workdir` parameter instead**, alongside `command` and `timeout_ms`. It is even `required` — a consequence of the strict-schema rule that every property must be listed, not a judgement that a caller should always name a directory. ([Codex issue #524](https://github.com/openai/codex/issues/524), whose schema error exposes the shape)
+
+pi-go's bash is a fresh process per call already, so Codex's answer is the matching one:
+
+```json
+{"command": "make", "workdir": "sub"}
+```
+
+A relative path resolves against the working directory; an absolute one is used as given. **Not required**: that would put a redundant `"."` on every single call, and would make every existing transcript invalid against the schema.
+
+Three things worth stating plainly:
+
+- **It does not go through the path guard, deliberately.** bash never had a path restriction (the reasoning is in `tools/tool.go`), and confining `workdir` while `cd /etc` in the command string still works would be a restriction that reads like a boundary without being one — while refusing the case the parameter exists for, running a build in a checkout next door. bash's real boundary is the container.
+- **But it must go through the subagent guard.** The guard catches a `cd` by parsing an absolute target out of the command text, and `workdir` reaches the same place without ever appearing there. Left unchecked, adding the parameter would have handed a child a way out of its worktree that reads as an ordinary argument. `Guard.CheckDir` is that check, and its test runs the tool rather than calling the guard.
+- **It is part of the "always allow this command" key.** Before `workdir` existed, "always allow `go build ./...`" could only mean "in the session's directory", because there was nowhere else to run. Keying on the command alone would silently promote that click to "in any directory the agent names" — a widening the user was never shown and could not have intended. So the key is command + workdir; a grant made for the bare command doesn't cover a `workdir` call, and vice versa.
+
+A directory that doesn't exist, or that is a file, is reported by the tool rather than left to bash failing to start. The difference is real for the model: `chdir: no such file or directory` with exit code -1 describes the harness, while a message naming the resolved path and the base it was resolved against describes the mistake. When a command ran somewhere other than the default, `BashDetails.workdir` records the resolved absolute path and the UI shows it — only when it is not the default, because announcing the default on every call says nothing.
+
+### `read`'s `paths[]`: several files in one call
+
+```json
+{"paths": ["a.go", "b.go", "sub/c.go"]}
+```
+
+`path` and `paths` are mutually exclusive (`offset` / `limit` pair with `path` only). **The budget is divided, not repeated**: five files at the full ceiling each is five times the limit that exists to stop one tool result from swallowing the context window. One failed path does not fail the call — that would waste the very round trip the call was saving; only all of them failing returns an error.
+
+Worth recording: **both Anthropic's and OpenAI's read tools are single-file**, so `paths[]` is pi-go's own extension. Their first-party answer to "do more in one call" is on the shell side (Codex's `commands[]` array with a per-command outcome), and pi-go rejected that one because of the approval gate — see `docs/tool-batching-and-parallelism.md` §5.D.
+
+A multi-file read now has its own card: the file list with per-file line counts, truncation and failure marks, expandable to one file's content with syntax highlighting and line numbers. **Content is sliced at byte ranges the tool recorded, not parsed back out of the concatenated text.** The latter has a failure this must not have: a file whose own content includes a line reading `==> other.go <==` ends its section early and the remainder is credited to the next file — one file's fragment under another file's name, which is worse than showing nothing. The ranges are computed by the same code that writes the text, so they cannot drift from the format.
 
 **`bash` output streams while running**, so when `go test` runs for a minute you can tell whether it's running or stuck:
 

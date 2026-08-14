@@ -5,11 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/yosukeno/pi-go/tools"
@@ -105,12 +103,14 @@ func NewDock() *Dock {
 		return d
 	}
 	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, syscall.SIGWINCH)
+	// Per-platform; see winch_unix.go and winch_other.go. On a platform with no
+	// SIGWINCH the channel simply never fires.
+	stopResize := notifyResize(sigc)
 	go func() {
 		for {
 			select {
 			case <-d.stopSig:
-				signal.Stop(sigc)
+				stopResize()
 				return
 			case <-sigc:
 				rows, cols := TermSize()

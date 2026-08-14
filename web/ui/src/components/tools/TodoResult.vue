@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import type { TodoDetails, TodoStatus } from "@/api/types";
+import { markOf } from "./todoMarks";
+import type { TodoDetails } from "@/api/types";
 
 const props = defineProps<{
   details: TodoDetails;
@@ -12,37 +13,40 @@ const props = defineProps<{
    * none.
    */
   superseded?: boolean;
+  /**
+   * pinned means the bar above the composer is already showing the current plan.
+   *
+   * The current list then collapses for the same reason a superseded one does —
+   * one plan should be open at a time — but it is not dimmed: it is still the
+   * plan, it is just not the copy you are meant to read. Without this the newest
+   * card and the bar render the same checklist twice, adjacent, whenever the
+   * transcript is scrolled to the bottom.
+   */
+  pinned?: boolean;
 }>();
 
 const { t } = useI18n();
 
-// Collapsed by default when superseded, and openable: the reason to keep an old
-// list at all is the occasional "when did that item appear".
+// Collapsed by default when there is another copy of this list to read, and always
+// openable: the reason to keep an old list on the timeline at all is the occasional
+// "when did that item appear".
 const open = ref(false);
 
 const done = computed(() => props.details.todos.filter((t) => t.status === "completed").length);
 const total = computed(() => props.details.todos.length);
 const current = computed(() => props.details.todos.find((t) => t.status === "in_progress"));
-const shown = computed(() => !props.superseded || open.value);
+const foldable = computed(() => props.superseded === true || props.pinned === true);
+const shown = computed(() => !foldable.value || open.value);
 
-// Marks rather than the status words. Five spelled-out statuses down the left
-// margin push every task into a ragged column and make the list harder to scan
-// than the plain numbered text the model reads — while the state of an item is
-// exactly the thing that is glanceable and the text is not.
-const MARKS: Record<TodoStatus, string> = {
-  pending: "○",
-  in_progress: "▸",
-  completed: "✓",
-  cancelled: "–",
-  blocked: "✗",
-};
+// The symbol table lives in todoMarks so the pinned bar above the composer draws
+// the same list the same way; see there.
 </script>
 
 <template>
   <div class="todo" :class="{ old: superseded }">
     <!-- The header is the whole card when collapsed, so it has to carry the two
          facts worth having: how far along, and what was being worked on. -->
-    <div class="head" :class="{ clickable: superseded }" @click="superseded && (open = !open)">
+    <div class="head" :class="{ clickable: foldable }" @click="foldable && (open = !open)">
       <span v-if="total === 0" class="meta">{{ t("todoResult.cleared") }}</span>
       <template v-else>
         <span class="count">{{ done }}/{{ total }}</span>
@@ -54,7 +58,7 @@ const MARKS: Record<TodoStatus, string> = {
 
     <ol v-if="shown && total" class="list">
       <li v-for="(t, i) in details.todos" :key="i" :class="t.status">
-        <span class="mark">{{ MARKS[t.status] ?? "○" }}</span>
+        <span class="mark">{{ markOf(t.status) }}</span>
         <span class="task">{{ t.task }}</span>
       </li>
     </ol>
@@ -76,7 +80,7 @@ const MARKS: Record<TodoStatus, string> = {
 }
 
 .count {
-  font-family: ui-monospace, monospace;
+  font-family: var(--pg-mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -94,19 +98,20 @@ const MARKS: Record<TodoStatus, string> = {
   margin-left: auto;
   flex: 0 0 auto;
   font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  background: var(--el-fill-color);
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--el-fill-color-light);
 }
 
 .list {
   list-style: none;
   margin: 0;
-  padding: 6px 10px;
+  padding: 8px 12px;
   background: var(--el-fill-color-lighter);
-  border-radius: 4px;
+  border: 1px solid var(--el-border-color-extra-light);
+  border-radius: 10px;
   font-size: 12px;
-  line-height: 1.7;
+  line-height: 1.75;
 }
 
 .list li {
@@ -118,8 +123,8 @@ const MARKS: Record<TodoStatus, string> = {
 .mark {
   flex: 0 0 auto;
   width: 1em;
-  font-family: ui-monospace, monospace;
-  color: var(--el-text-color-secondary);
+  font-family: var(--pg-mono);
+  color: var(--el-text-color-placeholder);
 }
 
 .task {
@@ -132,6 +137,10 @@ const MARKS: Record<TodoStatus, string> = {
    verification becomes a silent success. */
 li.completed {
   color: var(--el-text-color-secondary);
+
+  .mark {
+    color: var(--el-color-success);
+  }
 
   .task {
     text-decoration: line-through;

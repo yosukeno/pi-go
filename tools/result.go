@@ -27,6 +27,52 @@ type ReadDetails struct {
 	TruncatedBy string `json:"truncated_by,omitempty"`
 }
 
+// ReadManyDetails accompanies a read of several files in one call.
+//
+// A separate type rather than a repeated ReadDetails, and without a top-level
+// total_lines, because the web UI discriminates read results on exactly that field
+// (isReadDetails in timeline.ts) and its ReadResult component renders one file: one
+// path, one line count, one continue-from-here button. Shaped this way, a multi-file
+// read falls through to the plain-text fallback instead of feeding a single-file
+// component something it cannot draw. The structure is still on the transcript for
+// the analyzer, and for whoever writes the component.
+type ReadManyDetails struct {
+	Files []ReadFileDetails `json:"files"`
+}
+
+// ReadFileDetails is one file inside a multi-file read. Error is set instead of the
+// counts when that file could not be read, which does not fail the call — see
+// Read.readMany.
+type ReadFileDetails struct {
+	Path        string `json:"path"`
+	TotalLines  int    `json:"total_lines,omitempty"`
+	ShownLines  int    `json:"shown_lines,omitempty"`
+	Truncated   bool   `json:"truncated,omitempty"`
+	TruncatedBy string `json:"truncated_by,omitempty"`
+	Error       string `json:"error,omitempty"`
+
+	// BodyOffset and BodyLength locate this file's content inside Result.Text, as
+	// a byte range excluding the `==> path <==` header and the truncation note.
+	//
+	// They exist so an interface can show each file separately without parsing the
+	// concatenated text back apart. Parsing looked cheap — the separator is a fixed
+	// format this package writes itself — and it is not: a file whose own contents
+	// contain a line reading `==> other.go <==` splits the section it belongs to,
+	// and the result is a body attributed to the wrong file, which is the one
+	// failure mode a viewer must not have. Offsets are computed by the same code
+	// that writes the text, so they cannot drift from the format the way a reader's
+	// idea of it can.
+	//
+	// The body is sent once, not twice: Text has to carry it regardless, since that
+	// is the half the model reads, so duplicating it into Details would double a
+	// payload that is already the largest thing on the wire.
+	//
+	// Zero means there is no body — an unreadable path. A real body can never start
+	// at zero, because its header precedes it.
+	BodyOffset int `json:"body_offset,omitempty"`
+	BodyLength int `json:"body_length,omitempty"`
+}
+
 // LsDetails accompanies the ls tool. The counts are what the UI shows in place
 // of re-parsing the listing text.
 type LsDetails struct {
@@ -127,7 +173,12 @@ type TodoDetails struct {
 // BashDetails accompanies the bash tool. It is populated even when the command
 // fails, so the UI can show the exit code alongside the output.
 type BashDetails struct {
-	Command        string `json:"command"`
+	Command string `json:"command"`
+	// Workdir is where the command ran, and only when that was not the session's
+	// own directory. Recorded because a command that ran somewhere else and a card
+	// that does not say so is the same class of confusion the tool's description
+	// exists to prevent: a plausible wrong answer rather than an error.
+	Workdir        string `json:"workdir,omitempty"`
 	ExitCode       int    `json:"exit_code"`
 	DurationMS     int64  `json:"duration_ms"`
 	TimedOut       bool   `json:"timed_out,omitempty"`

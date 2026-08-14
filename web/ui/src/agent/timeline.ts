@@ -3,6 +3,8 @@ import type {
   Live,
   Message,
   PendingGate,
+  ReadFileDetails,
+  ReadManyDetails,
   SubagentDetails,
   SubagentFrame,
   TodoDetails,
@@ -475,6 +477,55 @@ export function isReadDetails(d: ToolDetails | undefined): d is Extract<ToolDeta
   return !!d && "total_lines" in d && !("command" in d);
 }
 
+/**
+ * A multi-file read. `files` is the discriminator, and it is the reason the Go type
+ * has no top-level `total_lines`: with one, isReadDetails above would claim it first
+ * and the single-file component would be handed a result it cannot draw.
+ */
+export function isReadManyDetails(d: ToolDetails | undefined): d is ReadManyDetails {
+  return !!d && "files" in d && Array.isArray((d as ReadManyDetails).files);
+}
+
+/**
+ * readBodies picks each file's content out of a multi-file read's text.
+ *
+ * A slice at recorded byte offsets, not a parse. The tool writes the offsets while it
+ * writes the text (ReadFileDetails.BodyOffset), so the two cannot disagree — whereas
+ * splitting on the `==> path <==` headers has a failure this must not have: a file
+ * whose own contents contain such a line ends its section early, and the remainder is
+ * attributed to the next file. A viewer showing one file's content under another
+ * file's name is worse than showing none.
+ *
+ * `undefined` for an entry with no body: an unreadable path, or a transcript recorded
+ * before the offsets existed. The component shows the row without content rather than
+ * guessing at one.
+ *
+ * Go counts bytes and a JS string is indexed in UTF-16 code units, so the text is
+ * encoded once and the ranges are taken from the bytes. Slicing the string directly
+ * and validating the result's byte length is not enough, and the way it fails is
+ * instructive: with three files where one holds CJK text, the wrong slice for the
+ * next file was `"=> plain.go <"` — thirteen ASCII bytes — against a body of
+ * `"done ✅ 🎉"`, also thirteen bytes. A length check passes and the reader sees one
+ * file's fragment under another file's name, which is exactly the failure the
+ * offsets exist to remove. So this does the conversion rather than checking it.
+ */
+export function readBodies(text: string, files: ReadFileDetails[]): (string | undefined)[] {
+  if (!files.some((f) => f.body_offset && f.body_length)) return files.map(() => undefined);
+  // Encoded once per result. The text is bounded by the tool's own output budget, so
+  // this is a copy of tens of kilobytes, not of a file.
+  const bytes = new TextEncoder().encode(text);
+  const decoder = new TextDecoder();
+  return files.map((f) => {
+    if (!f.body_offset || !f.body_length) return undefined;
+    const end = f.body_offset + f.body_length;
+    // A range past the end means the text is not the one the offsets were measured
+    // against. Nothing legitimate produces that, and a partial slice would be a
+    // fragment presented as a file.
+    if (end > bytes.byteLength) return undefined;
+    return decoder.decode(bytes.subarray(f.body_offset, end));
+  });
+}
+
 export function isLsDetails(d: ToolDetails | undefined): d is Extract<ToolDetails, { entries: number }> {
   return !!d && "entries" in d;
 }
@@ -561,6 +612,39 @@ export function isWriteDetails(d: ToolDetails | undefined): d is Extract<ToolDet
  */
 export function isTodoDetails(d: ToolDetails | undefined): d is TodoDetails {
   return !!d && "todos" in d;
+}
+
+/**
+ * liveTodos is the plan as it stands: the newest settled task list, or undefined
+ * when there is no plan to show.
+ *
+ * It exists so the pinned bar above the composer and the inline cards cannot
+ * disagree about which write is current. Both answers come from the same rule that
+ * markSupersededTodos applies — newest settled, successful write wins — and this
+ * reads it back off the flag rather than recomputing it, so there is one rule and
+ * not two implementations of it.
+ *
+ * An empty list is undefined, not an empty array. `todo` with no items means the
+ * agent cleared its list, and a pinned bar reading "0/0" for the rest of the
+ * session is worse than no bar: the point of pinning is that it says what is
+ * happening now, and nothing is.
+ */
+export function liveTodos(items: TimelineItem[]): TodoItem[] | undefined {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.kind !== "turn") continue;
+    for (let j = item.calls.length - 1; j >= 0; j--) {
+      const call = item.calls[j];
+      if (call.name !== "todo" || call.superseded) continue;
+      // Same exclusions as markSupersededTodos: a call with no result wrote
+      // nothing, and a rejected one changed nothing. Neither is the plan, and
+      // neither demoted the plan before it — so keep looking backwards.
+      if (!call.result || call.result.is_error) continue;
+      if (!isTodoDetails(call.result.details)) continue;
+      return call.result.details.todos.length ? call.result.details.todos : undefined;
+    }
+  }
+  return undefined;
 }
 
 export function isEditDetails(d: ToolDetails | undefined): d is Extract<ToolDetails, { edits: number }> {
