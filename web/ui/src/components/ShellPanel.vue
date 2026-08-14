@@ -5,6 +5,7 @@ import { Close } from "@element-plus/icons-vue";
 import { Icon } from "@iconify/vue";
 import { terminalIcon } from "./fileIcons";
 import { token } from "@/api/client";
+import { cssVar, themeVersion } from "@/theme";
 import type { Terminal as XTerm } from "@xterm/xterm";
 import type { FitAddon as FitAddonT } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
@@ -14,11 +15,20 @@ import "@xterm/xterm/css/xterm.css";
 // nobody pays for until the panel exists. The shell outlives this component
 // (detaching only closes the socket), so reopening or switching sessions and
 // coming back replays the server's backlog instead of starting over.
-const props = defineProps<{
-  sessionId: string | null;
-  layout: "right" | "bottom";
-  workspace?: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    sessionId: string | null;
+    layout: "right" | "bottom";
+    workspace?: string;
+    /**
+     * Draw the panel's own title bar. False when the shell is a tenant of the
+     * dock's hub, which supplies one header for whichever tenant is showing —
+     * two stacked title bars would spend twice the height saying it once.
+     */
+    header?: boolean;
+  }>(),
+  { header: true },
+);
 const emit = defineEmits<{ close: []; "update:layout": ["right" | "bottom"] }>();
 const { t } = useI18n();
 
@@ -29,6 +39,21 @@ let ws: WebSocket | null = null;
 let ro: ResizeObserver | undefined;
 let retryMs = 1000;
 let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * The emulator's colours, resolved from the skin.
+ *
+ * Only the surface and the foreground: the 16 ANSI slots are left at xterm's own
+ * defaults on purpose. Those are what a program's own colour codes mean, and a
+ * skin repainting them would change what the shell said, not how the panel looks.
+ */
+function termTheme() {
+  return {
+    background: cssVar("--pg-term-bg", "#1e1e1e"),
+    foreground: cssVar("--pg-term-fg", "#d6d7db"),
+    cursor: cssVar("--pg-term-fg", "#d6d7db"),
+  };
+}
 let disposed = false;
 let dead = false; // the shell exited; the next keystroke spawns a fresh one
 
@@ -52,7 +77,10 @@ async function ensureTerminal() {
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
     cursorBlink: true,
     scrollback: 5000,
-    theme: { background: "#1e1e1e" },
+    // xterm paints onto a canvas, so it cannot read a CSS variable: the skin's
+    // terminal surface has to be resolved to a real colour and handed over, and
+    // handed over again when the skin changes (the watch below).
+    theme: termTheme(),
   });
   fit = new fitMod.FitAddon();
   term.loadAddon(fit);
@@ -147,6 +175,13 @@ watch(
   },
 );
 
+// Skin follow. Handing xterm a new theme object repaints in place, so the
+// scrollback survives — clearing it would throw away output nobody asked to lose
+// just because the colours changed.
+watch(themeVersion, () => {
+  if (term) term.options.theme = termTheme();
+});
+
 onBeforeUnmount(() => {
   disposed = true;
   if (retryTimer) clearTimeout(retryTimer);
@@ -160,7 +195,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="shell-panel">
-    <header class="head">
+    <header v-if="header" class="head">
       <span class="title">
         <Icon :icon="terminalIcon" width="14" />
         Shell
@@ -197,7 +232,9 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #1e1e1e;
+  /* Matches the emulator's own surface, which is a skin token — the panel is the
+     frame around the canvas and a mismatch shows as a border of the wrong colour. */
+  background: var(--pg-term-bg);
 }
 
 .head {

@@ -87,6 +87,26 @@ func TestOpenRefusesNonGitDir(t *testing.T) {
 	}
 }
 
+// Available is the same question asked early, so it has to answer the same way
+// Open does — including the part where a plain directory is left untouched.
+func TestAvailableAgreesWithOpen(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := newRepo(t)
+	if !worktree.Available(root) {
+		t.Error("Available() on a repository = false")
+	}
+	plain := t.TempDir()
+	before := entries(t, plain)
+	if worktree.Available(plain) {
+		t.Error("Available() on a plain directory = true")
+	}
+	if after := entries(t, plain); after != before {
+		t.Errorf("Available() created %d entries in a directory it rejected", after-before)
+	}
+}
+
 // The worktree is created detached and outside the repository. Both are load-bearing:
 // detached keeps the user's branch list clean, and outside keeps the parent's find
 // and grep from filling up with copies of the project.
@@ -517,18 +537,7 @@ func entries(t *testing.T, dir string) int {
 	return len(e)
 }
 
-// unusedPID finds a pid that no process holds, so a lock can be made to look like
-// it was left behind by a crash.
-func unusedPID(t *testing.T) int {
-	t.Helper()
-	for pid := 30000; pid < 40000; pid += 7 {
-		if err := syscallKill(pid); err != nil {
-			return pid
-		}
-	}
-	t.Skip("could not find an unused pid")
-	return 0
-}
+// unusedPID is per-platform; see deadpid_unix_test.go and deadpid_other_test.go.
 
 // The two halves of "what is missing" have to work on a worktree that already
 // exists, not only on one being created. That is the whole reason they are separate

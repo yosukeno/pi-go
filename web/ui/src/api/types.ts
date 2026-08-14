@@ -43,6 +43,36 @@ export interface ReadDetails {
   truncated_by?: string;
 }
 
+/** One file inside a multi-file read. `error` replaces the counts when it failed. */
+export interface ReadFileDetails {
+  path: string;
+  total_lines?: number;
+  shown_lines?: number;
+  truncated?: boolean;
+  truncated_by?: string;
+  error?: string;
+  /**
+   * Byte range of this file's content inside the result text, excluding the header
+   * and the truncation note. Absent for a path that could not be read, and for
+   * transcripts recorded before the fields existed. See ReadFileDetails in
+   * tools/result.go for why the body is located this way rather than parsed out.
+   */
+  body_offset?: number;
+  body_length?: number;
+}
+
+/**
+ * A read of several files in one call.
+ *
+ * Deliberately without a top-level `total_lines`, because that field is how a read
+ * result is discriminated from this one (isReadDetails) and ReadResult draws exactly
+ * one file. The shape is the Go type's, tags and all; see ReadManyDetails there for
+ * why the budget is split and why one unreadable path does not fail the call.
+ */
+export interface ReadManyDetails {
+  files: ReadFileDetails[];
+}
+
 export interface LsDetails {
   path: string;
   entries: number;
@@ -75,6 +105,8 @@ export interface EditDetails {
 
 export interface BashDetails {
   command: string;
+  /** Where it ran, present only when that was not the session's own directory. */
+  workdir?: string;
   exit_code: number;
   duration_ms: number;
   timed_out?: boolean;
@@ -109,6 +141,7 @@ export interface GrepDetails {
 
 export type ToolDetails =
   | ReadDetails
+  | ReadManyDetails
   | LsDetails
   | FindDetails
   | GrepDetails
@@ -455,6 +488,37 @@ export interface SkillInfo {
   manual_only?: boolean;
 }
 
+// StarterCard is one card on the empty conversation. The content comes from a
+// skill's starters.json, so the deployment decides what its agent is for; the
+// server has already validated that exactly one action is present, that the icon
+// is a known name, and that a panel card names a registered panel.
+export interface StarterCard {
+  icon?: string;
+  title: string;
+  label?: string;
+  /** Put this text in the composer. Mutually exclusive with panel. */
+  prompt?: string;
+  /** Open this dock panel. */
+  panel?: string;
+  /** Hash route inside the panel, e.g. "#/clusters". */
+  at?: string;
+}
+
+// FollowupGroup offers the next step after a turn. `when` is matched against
+// what the last turn did (its tool calls and reply); no match shows nothing.
+export interface FollowupGroup {
+  when: string[];
+  chips: StarterCard[];
+}
+
+export interface Starters {
+  heading?: string;
+  /** Send a prompt card on click instead of filling the composer. */
+  send?: boolean;
+  cards: StarterCard[];
+  followups?: FollowupGroup[];
+}
+
 // PanelInfo is an external web app registered with -web-panel. path is the
 // same-origin prefix the iframe loads (/panels/<name>/); the backend URL is
 // never exposed to the page.
@@ -515,6 +579,35 @@ export interface FileContent {
   truncated_by?: "lines" | "bytes" | "";
   size: number;
   mtime_ms?: number;
+}
+
+// --- Version control state (web-ui-design.md §18.6) ------------------------
+
+// GitStatus mirrors git.Status. Counts, not paths: the panel below already lists
+// files, and a list here would grow without bound with the repository.
+export interface GitStatus {
+  repo: boolean;
+  root?: string;
+  branch?: string;
+  detached?: boolean;
+  unborn?: boolean;
+  head?: string;
+  subject?: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  conflicted: number;
+  // Up to 20 of the uncommitted paths, the deliberate exception to
+  // counts-not-paths: at session start they answer "which changes are not the
+  // agent's", which is a question numbers cannot answer. The bar does not render
+  // them — they exist for the prompt — but they are part of the response.
+  dirty_paths?: string[];
+  // Why there is no answer, when the reason is neither "no repository" nor a
+  // real state — no git binary, a timeout, a broken repository.
+  unavailable?: string;
 }
 
 // --- Workspace-level changes (journal-backed, web-ui-design.md §16 M4) -----

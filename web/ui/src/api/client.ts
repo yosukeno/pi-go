@@ -2,8 +2,10 @@ import type {
   FileContent,
   FileIndexResponse,
   FilesResponse,
+  GitStatus,
   ModelInfo,
   PanelInfo,
+  Starters,
   PolicyMode,
   PolicyState,
   SessionInfo,
@@ -16,6 +18,8 @@ import type {
 // The token arrives as a query parameter on the URL the server prints at
 // startup. It is kept in sessionStorage so a reload without the query string
 // still works, and mirrored back into the URL so the tab can be duplicated.
+// When it is absent or rejected, boot stops at the token gate (TokenGate.vue),
+// whose submit is the only other writer — via setToken below.
 const TOKEN_KEY = "pi-go-token";
 
 function readToken(): string {
@@ -35,6 +39,17 @@ export function authHeaders(): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+// The token gate's way in: write the token everywhere readToken looks, then
+// the caller reloads the page — `token` above is fixed at import time.
+export function setToken(value: string) {
+  // Guarded like readToken so unit tests can import this module.
+  if (typeof location === "undefined") return;
+  sessionStorage.setItem(TOKEN_KEY, value);
+  const url = new URL(location.href);
+  url.searchParams.set("token", value);
+  history.replaceState(null, "", url);
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
@@ -46,9 +61,18 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   });
   if (res.status === 204) return undefined as T;
   const text = await res.text();
-  const data = text ? JSON.parse(text) : undefined;
+  // Error bodies are not promised to be JSON — the auth middleware's 401 is
+  // plain text — so a parse failure must not become the message the user sees.
+  let data: { error?: string } | undefined;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = undefined;
+    }
+  }
   if (!res.ok) {
-    const message = data?.error ?? `HTTP ${res.status}`;
+    const message = data?.error ?? (text || `HTTP ${res.status}`);
     throw Object.assign(new Error(message), { status: res.status });
   }
   return data as T;
@@ -64,6 +88,11 @@ export const api = {
   // External panels registered with -web-panel; same once-at-boot fetch rule
   // as skills.
   panels: () => request<{ panels: PanelInfo[] }>("GET", "/api/panels"),
+
+  // Empty-state cards contributed by the loaded skills. Fetched at boot like
+  // the two above; the server re-reads the files each time, so a reload is
+  // enough to pick up an edited starters.json.
+  starters: () => request<{ starters: Starters }>("GET", "/api/starters"),
 
   sessions: () => request<{ sessions: SessionInfo[]; cwd: string }>("GET", "/api/sessions"),
 
@@ -95,12 +124,22 @@ export const api = {
 
   // Rewind forks the transcript away from a user message: the message and
   // everything after it leave the branch, and the caller then refills the
-  // composer with the withdrawn text. files additionally restores the
-  // workspace to the checkpoint taken when the message was sent. 409 while a
-  // run is in flight, 404 when the timeline id is unknown, 422 when files
-  // were requested but no checkpoint exists for that point.
-  rewind: (sid: string, messageId: string, files: boolean) =>
-    control<{ rewound: boolean }>(sid, { action: "rewind", message_id: messageId, files }),
+  // composer with the withdrawn text.
+  //
+  // mode says what to act on: "chat" forks only, "files" restores the workspace
+  // to the checkpoint taken when the message was sent and leaves the conversation
+  // alone, "both" does both. paths narrows a file restore to a subset of what the
+  // preview listed; omit it for all of them.
+  //
+  // 409 while a run is in flight, 404 when the timeline id is unknown, 422 when
+  // files were asked for but no checkpoint exists for that point.
+  rewind: (sid: string, messageId: string, mode: "chat" | "files" | "both", paths?: string[]) =>
+    control<{ rewound: boolean }>(sid, {
+      action: "rewind",
+      message_id: messageId,
+      mode,
+      ...(paths && paths.length ? { paths } : {}),
+    }),
 
   // Replace the conversation with a summary of it. Costs one model call, so this
   // can take as long as a turn does; 409 means a run is in flight and 422 means
@@ -180,6 +219,10 @@ export const api = {
 
   // One level at a time; 409 when it exists, 404 when the parent does not.
   mkdir: (path: string) => request<{ path: string }>("POST", "/api/files/mkdir", { path }),
+
+  // Version control state. Read-only and always 200: "not a repository" is a
+  // state to render, not an error (§18.6).
+  workspaceGit: () => request<GitStatus>("GET", "/api/workspace/git"),
 
   // Workspace-level changes, journaled against first-touch pre-images (§16 M4).
   workspaceChanges: () => request<{ changes: WorkspaceChange[] }>("GET", "/api/workspace/changes"),

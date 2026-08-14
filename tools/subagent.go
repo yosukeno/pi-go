@@ -51,7 +51,85 @@ const (
 	EnvSubagentDepth    = "PI_GO_SUBAGENT_DEPTH"
 	EnvMainCheckout     = "PI_GO_MAIN_CHECKOUT"
 	EnvSubagentReadOnly = "PI_GO_SUBAGENT_READONLY"
+	// EnvSubagentShared tells a child it is *not* in a worktree, so its bash guard
+	// can say something true when it refuses git. Same class as the read-only
+	// marker: derived from the parent's configuration, never from the model.
+	EnvSubagentShared = "PI_GO_SUBAGENT_SHARED"
 )
+
+// How an edit-mode child is kept out of the parent's way.
+//
+//	IsolationWorktree  its own checkout, and a commit at the end   (default)
+//	IsolationShared    the parent's own directory, no commit       (opt-in)
+//
+// Shared exists for a workload the worktree model cannot serve: delegated work
+// that must run commands but is not editing a codebase. Running four malware
+// samples through a decompiler is the case that forced it — that needs bash, so it
+// needs edit mode, but a worktree is wrong for it twice over. A checkout starts at
+// HEAD, so it does not contain the parent's uncommitted inputs; and the child's
+// output is committed and its directory deleted, so the parent gets a commit where
+// it wanted files it can read.
+//
+// It is opt-in, and it has to stay opt-in. Two read-write children in one directory
+// is exactly the collision the worktree package exists to prevent, and the
+// protection that remains is partial: write and edit serialise per path through
+// withFileLock, but bash does not go through it at all, so two children running a
+// build in the same tree can still interleave. There is also no undo — nothing is
+// committed, so a child that deletes the parent's uncommitted work has deleted it.
+// Choosing this trades those away for the parent being able to read what its
+// children produced, which is the right trade for an analysis pipeline and the
+// wrong one for editing a repository.
+const (
+	IsolationWorktree = "worktree"
+	IsolationShared   = "shared"
+)
+
+// EnvIsolation names the isolation mode for edit-mode children. An operator's
+// setting, not a session's: it describes what the deployment's workspace is for.
+const EnvIsolation = "PIGO_SUBAGENT_ISOLATION"
+
+// EnvConcurrency overrides how many children one session runs at once.
+//
+// Configurable because DefaultSubagentConcurrency is derived from the approval
+// gate's arithmetic (see the constant), and a deployment that fans out over a fixed
+// set of inputs is bound by CPU instead. Raising it is checked against the timeouts
+// by web.CheckApprovalBudget, which is where the two constraints meet.
+const EnvConcurrency = "PIGO_SUBAGENT_CONCURRENCY"
+
+// IsolationFromEnv reads EnvIsolation.
+//
+// The safe value is returned alongside any error, so a caller that only wants the
+// setting cannot accidentally turn a typo into shared isolation. The error is for
+// startup, where a person is watching: silently ignoring `shard` would leave
+// someone convinced the mode is on when it is not, which is the worse of the two
+// failures — they would then trust a directory to be shared and find a commit.
+func IsolationFromEnv() (string, error) {
+	switch v := strings.TrimSpace(os.Getenv(EnvIsolation)); v {
+	case "", IsolationWorktree:
+		return IsolationWorktree, nil
+	case IsolationShared:
+		return IsolationShared, nil
+	default:
+		return IsolationWorktree, fmt.Errorf("%s=%q is not a known isolation mode: use %q "+
+			"(each edit subagent gets its own git worktree and its work comes back as a "+
+			"commit) or %q (edit subagents work directly in the session's directory, with "+
+			"no isolation and no commit)", EnvIsolation, v, IsolationWorktree, IsolationShared)
+	}
+}
+
+// ConcurrencyFromEnv reads EnvConcurrency, returning 0 when it is unset or
+// unusable — the same "leave it to the default" value the field takes.
+func ConcurrencyFromEnv() (int, error) {
+	raw := strings.TrimSpace(os.Getenv(EnvConcurrency))
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("%s=%q is not a positive whole number of subagents", EnvConcurrency, raw)
+	}
+	return n, nil
+}
 
 // The two shapes a delegated task can take.
 //
@@ -132,6 +210,34 @@ type Subagent struct {
 	Depth    int
 	MaxDepth int
 
+	// Isolation is how an edit child is kept out of the parent's way. Empty means
+	// IsolationWorktree, which is the behaviour this tool was built around; see the
+	// constants for what the other choice gives up and why it exists.
+	Isolation string
+
+	// ExploreOnly withholds edit mode because Cwd cannot host an isolated
+	// worktree — in practice, because it is not inside a git repository.
+	//
+	// Set by the caller from worktree.Available rather than detected here, so that
+	// building a schema stays a pure function and package tools keeps doing no git.
+	//
+	// Withholding beats refusing, and the reason is the same one that keeps the
+	// whole tool unregistered past MaxDepth: edit mode in a non-repository fails
+	// every single time, and the failure text names a remedy (`git init`) that the
+	// model cannot carry out — a subagent has no git. Left in the enum it produces a
+	// loop of identical failures, one turn each, which is exactly what was observed.
+	// Taken out of the enum it produces one honest sentence in the description and a
+	// model that delegates read-only work instead.
+	//
+	// Decided once per session and constant for its life, so it does not break
+	// prefix caching: the hazard there is editing the tool list mid-conversation.
+	//
+	// Only consulted through exploreOnly, because shared isolation needs no
+	// repository and so is not subject to it. Callers set it from
+	// worktree.Available unconditionally and let that one method decide, rather
+	// than each of them repeating the combination.
+	ExploreOnly bool
+
 	// Concurrency bounds how many children this session runs at once. Zero means
 	// DefaultSubagentConcurrency.
 	//
@@ -160,6 +266,16 @@ type Subagent struct {
 	// parent's policy passes them without a prompt.
 	Review ReviewFunc
 }
+
+// shared reports whether edit children run in the parent's own directory.
+func (s *Subagent) shared() bool { return s.Isolation == IsolationShared }
+
+// exploreOnly reports whether edit mode has to be withheld.
+//
+// A missing repository only rules out the worktree path. Shared isolation puts the
+// child in the parent's directory, which is where explore mode already runs, so it
+// works in a plain directory and edit mode stays on the menu.
+func (s *Subagent) exploreOnly() bool { return s.ExploreOnly && !s.shared() }
 
 // ReviewFunc is the parent's approval decision for a child's tool call.
 type ReviewFunc func(ctx context.Context, req Approval) Decision
@@ -251,7 +367,40 @@ func (*Subagent) Name() string { return "subagent" }
 // subagent inherits nothing from this conversation — not the files already read,
 // not the decisions already made — and the most common failure is a one-line task
 // that was perfectly clear in context and meaningless out of it.
-func (*Subagent) Description() string {
+func (s *Subagent) Description() string {
+	// The edit paragraph is replaced rather than deleted when the mode is gone. A
+	// model that knows delegation exists will otherwise keep proposing shell work
+	// for it; saying why the mode is missing, and what to do instead, is the
+	// difference between one wasted turn and several.
+	editPara := "mode \"edit\" also gets write, edit and shell commands, in an isolated git " +
+		"worktree from HEAD carrying your uncommitted changes to tracked files (files you " +
+		"created but never committed are not there). Use it for changing files or running " +
+		"things — applying a fix, running a test suite, chasing a failing build. Its edits " +
+		"never touch your working directory: they come back as a commit, to inspect with " +
+		"`git show <ref>` and apply with `git cherry-pick <commit>`."
+	if s.shared() {
+		// The two facts a parent gets wrong otherwise, both observed as the same
+		// mistake in reverse under worktree isolation: it looks for a commit that
+		// does not exist, and it does not realise the files are already there. And
+		// the warning has to be here, because "several children in one directory"
+		// is a hazard only the caller can avoid — by telling them apart.
+		editPara = "mode \"edit\" also gets write, edit and shell commands, and runs in " +
+			"your own directory rather than an isolated copy. So it sees your files as " +
+			"they are now, and whatever it writes is simply there when it finishes: there " +
+			"is no commit and nothing to apply. Use it for changing files or running " +
+			"things — a build, a test suite, a tool that produces output you then want to " +
+			"read.\n\n" +
+			"Because there is no isolation, two edit subagents running at once share one " +
+			"directory. When you delegate several, give each one its own output path and " +
+			"say so in the task; do not have two of them build, generate or write into the " +
+			"same place."
+	}
+	if s.exploreOnly() {
+		editPara = "mode \"edit\" is not available here: this working directory is not inside a " +
+			"git repository, and edit mode needs one for the isolated worktree it runs in. " +
+			"\"explore\" is the only mode. Anything that has to write files or run commands, " +
+			"do yourself with your own bash, write and edit tools — do not delegate it."
+	}
 	return "Delegate a self-contained task to a subagent: a separate agent with its own " +
 		"context window. Only its final answer comes back here, so use it when a task would " +
 		"otherwise fill this conversation with output you will never refer to again. " +
@@ -260,12 +409,7 @@ func (*Subagent) Description() string {
 		"uncommitted files. Use it for questions — where something is implemented, how a " +
 		"subsystem fits together, which callers depend on a function. Prefer it whenever " +
 		"you only need to know something.\n\n" +
-		"mode \"edit\" also gets write, edit and shell commands, in an isolated git " +
-		"worktree from HEAD carrying your uncommitted changes to tracked files (files you " +
-		"created but never committed are not there). Use it for changing files or running " +
-		"things — applying a fix, running a test suite, chasing a failing build. Its edits " +
-		"never touch your working directory: they come back as a commit, to inspect with " +
-		"`git show <ref>` and apply with `git cherry-pick <commit>`.\n\n" +
+		editPara + "\n\n" +
 		"Write the task as if to a competent colleague who cannot see this conversation. " +
 		"The subagent starts from an empty context: it does not know which files you have " +
 		"read, what the user asked for, or what you have already ruled out. Include the " +
@@ -275,15 +419,31 @@ func (*Subagent) Description() string {
 		"A subagent cannot run git and cannot delegate further."
 }
 
-// ExecutionMode is Parallel: the whole point of a worktree is that two subagents
-// editing the same file cannot collide, so serialising them would throw away the
-// isolation that was just paid for.
+// ExecutionMode is Parallel, and under worktree isolation that is free: two
+// subagents editing the same file cannot collide when neither can see the other's
+// checkout, so serialising them would throw away the isolation just paid for.
+//
+// Under shared isolation it is not free, and it stays Parallel anyway. Fanning out
+// over a set of inputs is the entire reason that mode exists, so serialising it
+// would remove the feature to protect it. What bounds the overlap is Concurrency,
+// and what keeps the common case correct is the task text telling each child where
+// to write; see the Isolation constants for what is and is not still guaranteed.
 func (*Subagent) ExecutionMode() ExecutionMode { return Parallel }
 
-func (*Subagent) InputSchema() map[string]any {
+func (s *Subagent) InputSchema() map[string]any {
 	mode := prop("string", "\"explore\" for read-only work: reading, searching, "+
 		"explaining. \"edit\" when the subagent must change files or run commands.")
 	mode["enum"] = []string{ModeExplore, ModeEdit}
+	// mode stays required with a one-value enum rather than disappearing. The field
+	// is what makes a delegation's intent explicit in the transcript and in the UI
+	// chip, and a schema that still asks for it costs almost nothing next to a
+	// second shape of arguments to parse.
+	if s.exploreOnly() {
+		mode = prop("string", "\"explore\" is the only mode available: this working "+
+			"directory is not a git repository, so edit mode has nowhere to put its "+
+			"isolated worktree.")
+		mode["enum"] = []string{ModeExplore}
+	}
 	return object([]string{"task", "mode"}, map[string]any{
 		"task": prop("string", "The complete task for the subagent, written as if to "+
 			"someone who cannot see this conversation: include file paths, exact error "+
@@ -301,6 +461,11 @@ func (*Subagent) Schema() map[string]any {
 type SubagentDetails struct {
 	ID   string `json:"id"`
 	Mode string `json:"mode"`
+	// Isolation is recorded only when it was not the default, so a transcript from
+	// a worktree deployment is byte-for-byte what it always was. Present because
+	// mode alone stops answering "why is there no commit" once there are two ways
+	// for an edit run to end.
+	Isolation string `json:"isolation,omitempty"`
 	// Model is what the child actually ran, which is not always the parent's: an
 	// explore child may be configured onto a different one. Recorded because "why
 	// was that answer worse than I expected" is otherwise unanswerable.
@@ -341,7 +506,21 @@ func (s *Subagent) ExecuteStreaming(ctx context.Context, raw json.RawMessage, on
 		return Result{}, errors.New("task must not be empty")
 	}
 	switch a.Mode {
-	case ModeExplore, ModeEdit:
+	case ModeExplore:
+	case ModeEdit:
+		// Belt to the schema's braces. The enum already leaves edit out when the
+		// workspace has no repository, but ValidateArgs reads the reflection schema
+		// (whose enum tag is static) and a model can repeat a mode it used earlier in
+		// the session. Answering here, before the worktree is attempted, replaces
+		// worktree.Open's "run `git init` first" — advice for a person at a terminal —
+		// with the move that is actually open to the model.
+		if s.exploreOnly() {
+			return Result{}, fmt.Errorf("mode %q is not available: %s is not inside a git "+
+				"repository, and an edit subagent needs one for its isolated worktree. Use "+
+				"mode %q to delegate reading and searching, and do anything that writes files "+
+				"or runs commands yourself with bash, write and edit",
+				ModeEdit, s.Cwd, ModeExplore)
+		}
 	case "":
 		return Result{}, fmt.Errorf("mode is required: %q to read, search and explain "+
 			"without changing anything, %q to let the subagent edit files and run commands",
@@ -421,8 +600,53 @@ func (s *Subagent) explore(ctx context.Context, exe, task string, timeout time.D
 	return Result{Text: text, Details: d}, err
 }
 
-// edit runs a read-write child in an isolated worktree and commits what it did.
+// edit dispatches a read-write child to whichever isolation this deployment chose.
+//
+// A dispatcher rather than a branch inside one function, because the two paths have
+// almost nothing in common after spawn: one creates a checkout, locks it, commits it
+// and removes it, and the other does none of those. Interleaving them behind
+// conditionals is how the worktree bookkeeping ends up half-applied.
 func (s *Subagent) edit(ctx context.Context, exe, task string, timeout time.Duration,
+	onPartial func(Partial)) (Result, error) {
+
+	if s.shared() {
+		return s.editShared(ctx, exe, task, timeout, onPartial)
+	}
+	return s.editWorktree(ctx, exe, task, timeout, onPartial)
+}
+
+// editShared runs a read-write child in the parent's own directory.
+//
+// Deliberately close to explore: same directory, same absence of git bookkeeping,
+// and the only difference is that the child keeps write, edit and bash. That
+// shortness is the point — there is no checkout to build, nothing to lock, and no
+// commit, so the failure modes worktree isolation has to defend against do not
+// arise here. What it gives up instead is listed on the Isolation constants, and
+// the giving up happened when an operator set the environment variable, not here.
+func (s *Subagent) editShared(ctx context.Context, exe, task string, timeout time.Duration,
+	onPartial func(Partial)) (Result, error) {
+
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	// mainCheckout stays empty, and that is not an omission. It exists so a child's
+	// guard can refuse commands naming the repository its worktree came from —
+	// here that repository *is* the child's own directory, so naming it would refuse
+	// every absolute path the child legitimately uses. The guard's git ban is what
+	// matters in this mode and it is unconditional.
+	spec := childSpec{id: newID(), dir: s.Cwd, shared: true}
+	run, _ := s.spawn(runCtx, exe, spec, sharedNote()+task, onPartial)
+	d := SubagentDetails{
+		ID: spec.id, Mode: ModeEdit, Isolation: IsolationShared,
+		Model: spec.modelOr(s.Model), Session: run.session,
+		Turns: run.turns, InputTok: run.input, OutTok: run.output, ExitCode: run.exit,
+	}
+	text, err := run.report(&d, timeout)
+	return Result{Text: text, Details: d}, err
+}
+
+// editWorktree runs a read-write child in an isolated worktree and commits what it
+// did.
+func (s *Subagent) editWorktree(ctx context.Context, exe, task string, timeout time.Duration,
 	onPartial func(Partial)) (Result, error) {
 
 	repo, err := worktree.Open(s.Cwd)
@@ -603,6 +827,43 @@ func exploreNote() string {
 		"</your-role>\n\n"
 }
 
+// sharedNote is the preamble prepended to a shared edit child's task.
+//
+// Constant, like exploreNote and for the same reason: running in the parent's own
+// directory is the case where nothing is missing, so there is no per-run state to
+// report. What has to be said is the two things a child would otherwise get wrong
+// by carrying over the worktree model's habits.
+//
+// The first is that its output is the deliverable. Under worktree isolation a child
+// leaves files behind and the parent turns them into a commit, so "describe what you
+// changed" is the whole handover. Here the parent can read the files, and the useful
+// answer names where they are — a child that writes to a path it never mentions has
+// produced something nobody can find.
+//
+// The second is that it is not alone. Siblings may be running in this directory at
+// the same moment, so an unexpected file is not evidence of a bug to chase, and
+// tidying up "stray" output is how one child deletes another's work.
+func sharedNote() string {
+	return "<your-directory>\nYou are working directly in the directory the parent " +
+		"agent is working in — not in an isolated copy. You see its files as they are " +
+		"now, including uncommitted ones, and anything you write is immediately real.\n" +
+		editRoleShared +
+		"Other subagents may be working in this same directory at the same time. Files " +
+		"you did not create may appear or change while you run: that is expected, not a " +
+		"fault to investigate. Touch only what your task names, and never clean up or " +
+		"delete anything you did not create yourself.\n" +
+		"</your-directory>\n\n"
+}
+
+// editRoleShared is the shared-isolation counterpart of editRole. Same purpose —
+// tell the child what it is before it learns by walking into a refusal — and the
+// same unconditional placement, but the facts are different in both halves: there is
+// no commit coming, and its files are what gets read.
+const editRoleShared = "You have no git here: do not try to commit, diff, or read a hash. " +
+	"Nothing is committed for you and there is nothing to apply — your changes are already " +
+	"in place. In your answer, say what you changed and give the full path of anything you " +
+	"wrote, because that is how the parent finds it.\n"
+
 // situation is the preamble prepended to an edit child's task: what its checkout
 // is and, more usefully, what is not in it.
 //
@@ -703,6 +964,11 @@ type childSpec struct {
 	// bash guard can refuse commands that name it. Empty in explore mode, where
 	// there is no bash to guard and no separate checkout to name.
 	mainCheckout string
+	// shared says this child is read-write in the parent's own directory rather than
+	// in a worktree, so its guard refuses git with a reason that is true. Carried
+	// separately from "mainCheckout is empty" because the two coincide by accident
+	// and a reader should not have to work that out.
+	shared bool
 	// model overrides the inherited model for this child. Empty means inherit.
 	model string
 }
@@ -743,6 +1009,9 @@ func (s *Subagent) spawn(ctx context.Context, exe string, spec childSpec,
 	if spec.readOnly {
 		cmd.Env = append(cmd.Env, EnvSubagentReadOnly+"=1")
 	}
+	if spec.shared {
+		cmd.Env = append(cmd.Env, EnvSubagentShared+"=1")
+	}
 	closeGate, err := s.wireGate(cmd, spec.id)
 	if err != nil {
 		return &childRun{spawnErr: err}, err
@@ -751,7 +1020,7 @@ func (s *Subagent) spawn(ctx context.Context, exe string, spec childSpec,
 	// Same process-group treatment as bash: a child that spawns `go test` must not
 	// leave it running after the parent gives up on the turn.
 	setProcessGroup(cmd)
-	cmd.Cancel = func() error { return killGroup(cmd) }
+	cmd.Cancel = func() error { return KillGroup(cmd) }
 	cmd.WaitDelay = 2 * time.Second
 
 	stdout, err := cmd.StdoutPipe()
@@ -921,6 +1190,14 @@ func (r *childRun) report(d *SubagentDetails, timeout time.Duration) (string, er
 		fmt.Fprintf(&b, "\n\n[the subagent changed files; its commit is %s, reachable as %s. "+
 			"Inspect it with `git show %s`, apply it with `git cherry-pick %s`]",
 			shortSHA(d.Commit), d.Ref, d.Ref, shortSHA(d.Commit))
+	case d.Isolation == IsolationShared:
+		// Not "changed no files": under shared isolation nothing measured whether it
+		// did. The commit was the measurement, and there is no commit here. Saying
+		// nothing changed would be a claim this code cannot support, and the parent
+		// would act on it — the failure would be a report of "no output produced"
+		// about files sitting in the directory.
+		b.WriteString("\n\n[the subagent worked directly in this directory, so anything " +
+			"it wrote is already here; there is no commit]")
 	case d.Mode == ModeEdit:
 		// Worth saying in edit mode, where the model asked for changes and got
 		// none: that is a result, not an absence of one. Saying it after an explore

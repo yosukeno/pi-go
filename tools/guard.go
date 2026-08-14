@@ -32,7 +32,19 @@ type Guard struct {
 	Worktree string
 	// MainCheckout is the repository the worktree was made from. Naming it is
 	// enough to be refused, because a subagent has no legitimate reason to.
+	//
+	// Empty under shared isolation, where the child's directory *is* the
+	// repository: the check would then refuse every absolute path the child
+	// legitimately uses.
 	MainCheckout string
+	// Shared says the child is working in the parent's own directory rather than in
+	// a worktree, so the git refusal can give a reason that is true there.
+	//
+	// Only the wording changes. The ban itself is if anything more load-bearing in
+	// this mode: under worktree isolation a stray `git commit` lands on a throwaway
+	// checkout the parent verifies before trusting, while here it would land in the
+	// user's own repository, on their branch, mixed in with their uncommitted work.
+	Shared bool
 }
 
 // deniedEnv are assignments that redirect git regardless of any path check.
@@ -48,6 +60,13 @@ func (g *Guard) Check(command string) error {
 	}
 	for _, word := range shellWords(command) {
 		if isGit(word) {
+			if g.Shared {
+				return fmt.Errorf("git is not available to a subagent. You are working "+
+					"directly in the parent agent's own repository, so a commit here would "+
+					"land on its branch alongside work that is not yours. Your changes are "+
+					"already in place and need no recording; to see what you have changed, "+
+					"read the files. (refused: %s)", firstLine(command))
+			}
 			return fmt.Errorf("git is not available to a subagent. You are working in an "+
 				"isolated worktree and your changes are committed for you when you finish, "+
 				"so you never need to run git here. To see what you have changed, read the "+
@@ -69,6 +88,32 @@ func (g *Guard) Check(command string) error {
 	if dir := absoluteCD(command); dir != "" && !g.inside(dir) {
 		return fmt.Errorf("changing directory to %s would leave your worktree. Everything "+
 			"you need is under %s. (refused: %s)", dir, g.Worktree, firstLine(command))
+	}
+	return nil
+}
+
+// CheckDir reports why a command may not run in dir, or nil.
+//
+// It exists because bash's workdir parameter reaches the same place a `cd` does
+// without going through the command text, and Check finds a `cd` by parsing that
+// text. Without this, adding the parameter would have handed a subagent a way out of
+// its worktree that reads as an ordinary argument.
+//
+// resolved is what will be passed to the process and is what the comparison uses;
+// requested is what the model wrote, and appears in the message because that is the
+// string it has to change.
+func (g *Guard) CheckDir(resolved, requested string) error {
+	if g == nil || requested == "" {
+		return nil
+	}
+	if g.MainCheckout != "" && within(filepath.Clean(resolved), filepath.Clean(g.MainCheckout)) {
+		return fmt.Errorf("workdir %q resolves to %s, inside the main checkout your worktree "+
+			"was copied from. Work only inside your own directory, %s; the parent agent applies "+
+			"your changes there when you are done", requested, resolved, g.Worktree)
+	}
+	if !g.inside(resolved) {
+		return fmt.Errorf("workdir %q resolves to %s, which is outside your worktree. "+
+			"Everything you need is under %s", requested, resolved, g.Worktree)
 	}
 	return nil
 }

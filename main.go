@@ -17,6 +17,7 @@ import (
 	"github.com/yosukeno/pi-go/agent"
 	"github.com/yosukeno/pi-go/analyze"
 	"github.com/yosukeno/pi-go/config"
+	"github.com/yosukeno/pi-go/git"
 	"github.com/yosukeno/pi-go/llm"
 	"github.com/yosukeno/pi-go/memory"
 	"github.com/yosukeno/pi-go/session"
@@ -122,6 +123,12 @@ func main() {
 		pruneWorktrees = flag.Bool("worktrees-prune", false,
 			"Remove isolated worktrees that hold no work and no live lock, then exit."+
 				"\n清理没有未保存改动、也没有活进程占用的隔离 worktree 后退出")
+		noGitContext = flag.Bool("no-git-context", false,
+			"Do not tell the model the workspace's git branch and uncommitted counts."+
+				"\n不把工作区的 git 分支与未提交数量写进系统提示")
+		pruneCheckpoints = flag.Bool("checkpoints-prune", false,
+			"Discard rewind points beyond the retention policy for this workspace, then exit."+
+				"\n清理本工作区超出保留策略的撤回点后退出")
 		listSkills = flag.Bool("skills", false,
 			"List discovered skills and exit.\n列出已发现的 skills 后退出")
 		noSkills = flag.Bool("no-skills", false,
@@ -224,9 +231,25 @@ func main() {
 		}
 		return
 	}
+	if *pruneCheckpoints {
+		if err := checkpointCommand(os.Stdout, *cwd); err != nil {
+			fmt.Fprintf(os.Stderr, "pi-go: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *maxRuns < 1 {
 		fmt.Fprintf(os.Stderr, "pi-go: -max-runs must be at least 1 (got %d)\n", *maxRuns)
 		os.Exit(1)
+	}
+	// Both subagent settings are read from the environment wherever they are needed,
+	// which means a typo would otherwise be silently ignored — and being silently
+	// ignored is the dangerous direction for the isolation one: an operator would go
+	// on believing children share the workspace and find commits instead. Checked
+	// here, once, before either the terminal or the server path builds anything.
+	if err := checkSubagentEnv(os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "pi-go: %v\n", err)
+		os.Exit(2)
 	}
 	if *analyzeSession != "" {
 		if err := analyzeSessionFile(*analyzeSession, *analyzeFormat, *analyzeOutput); err != nil {
@@ -246,6 +269,7 @@ func main() {
 			stagnationThreshold: *stagnationThreshold, tokenBudget: *tokenBudget,
 			costBudget: *costBudget, timeBudget: *timeBudget,
 			contextEdit: *contextEdit,
+			gitContext:  !*noGitContext,
 			skills:      skillOpts,
 			memory:      memOpts,
 			panels:      panelFlags,
@@ -264,6 +288,7 @@ func main() {
 		stagnationThreshold: *stagnationThreshold, tokenBudget: *tokenBudget,
 		costBudget: *costBudget, timeBudget: *timeBudget,
 		contextEdit: *contextEdit,
+		gitContext:  !*noGitContext,
 		skills:      skillOpts,
 		memory:      memOpts,
 	}
@@ -301,8 +326,11 @@ type options struct {
 	contextEdit string
 	quiet       bool
 	evaluate    bool
-	skills      skills.Options
-	memory      memory.Options
+	// gitContext is the positive form of the -no-git-context flag: whether the
+	// system prompt gets the workspace's version control state.
+	gitContext bool
+	skills     skills.Options
+	memory     memory.Options
 }
 
 // The output modes. text is the default and behaves exactly as before.
@@ -421,6 +449,14 @@ func run(o options) error {
 	// section is what tells run 1 — before any limit is near — that its context
 	// will not carry over.
 	sections := []string{skills.PromptSection(skillList), mem.PromptSection()}
+	// Probed once, here, for the reason the two sections above are: the system
+	// prompt must not change mid-session or the cached prefix is invalidated every
+	// turn. So this is the state at session start, and it is honest about that —
+	// the model watches its own commits happen, and asking git again every turn
+	// would cost a subprocess per turn to tell it what it just did.
+	if o.gitContext {
+		sections = append(sections, git.Probe(cwd).PromptSection())
+	}
 	if o.maxRuns > 1 {
 		sections = append(sections, chainSection)
 	}

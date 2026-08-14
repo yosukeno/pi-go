@@ -5,7 +5,9 @@ import {
   isSearchDetails,
   isSubagentDetails,
   isTodoDetails,
+  liveTodos,
   matchSkillRead,
+  readBodies,
   subagentSteps,
   parseSkillBlock,
   summarizeArgs,
@@ -13,7 +15,7 @@ import {
 } from "./timeline";
 import { clipTail } from "./useAgentStream";
 import { parseFrame } from "./sse";
-import { emptyLive, type Live, type Message, type ToolResult } from "@/api/types";
+import { emptyLive, type Live, type Message, type ReadFileDetails, type ToolResult } from "@/api/types";
 
 // The asserted copy is Chinese: pin the locale so the tests do not depend on
 // the runner's navigator.language.
@@ -206,6 +208,142 @@ describe("buildTimeline", () => {
     const turn2 = items[1];
     if (turn2.kind !== "turn") throw new Error("expected a turn");
     expect(turn2.calls[0].corrects).toBeUndefined();
+  });
+});
+
+// readBodies slices a multi-file read at the offsets the tool recorded. The fixture
+// builds text the way tools/read.go's readMany does and computes the offsets the same
+// way it does, in bytes, so these cases exercise the real contract rather than a
+// convenient one.
+describe("readBodies", () => {
+  /** layout mirrors readMany: `==> path <==\n` + body, sections joined by a blank line. */
+  function layout(sections: [string, string][], note = ""): { text: string; files: ReadFileDetails[] } {
+    const encoder = new TextEncoder();
+    let text = "";
+    const files: ReadFileDetails[] = [];
+    for (const [path, body] of sections) {
+      if (text) text += "\n\n";
+      text += `==> ${path} <==\n`;
+      const offset = encoder.encode(text).byteLength;
+      text += body;
+      files.push({
+        path,
+        total_lines: 1,
+        shown_lines: 1,
+        body_offset: offset,
+        body_length: encoder.encode(body).byteLength,
+      });
+      // The truncation note sits after the body and outside its recorded range.
+      text += note;
+    }
+    return { text, files };
+  }
+
+  it("returns each file's own content", () => {
+    const { text, files } = layout([
+      ["a.go", "package a"],
+      ["b.go", "package b\nfunc B() {}"],
+    ]);
+    expect(readBodies(text, files)).toEqual(["package a", "package b\nfunc B() {}"]);
+  });
+
+  it("is unaffected by a body that looks like a section header", () => {
+    // This is the case that ruled out parsing the text back apart: split on the
+    // headers and doc.md's section ends early, with the rest of it credited to b.go.
+    const { text, files } = layout([
+      ["doc.md", "example output:\n==> b.go <==\nnot really b"],
+      ["b.go", "package b"],
+    ]);
+    expect(readBodies(text, files)).toEqual([
+      "example output:\n==> b.go <==\nnot really b",
+      "package b",
+    ]);
+  });
+
+  it("excludes the truncation note, which is addressed to the model", () => {
+    const { text, files } = layout([["big.go", "line one"]], "\n\n[Showing lines 1-1 of 900 …]");
+    expect(readBodies(text, files)).toEqual(["line one"]);
+  });
+
+  it("gives no body to an unreadable path and keeps its neighbours right", () => {
+    // One failed path does not fail the call, so the entries around it still have to
+    // line up. A failure records no offsets; the row shows `error` instead.
+    const { text, files } = layout([
+      ["a.go", "package a"],
+      ["c.go", "package c"],
+    ]);
+    const withFailure = [files[0], { path: "gone.go", error: "no such file" }, files[1]];
+    expect(readBodies(text, withFailure)).toEqual(["package a", undefined, "package c"]);
+  });
+
+  it("handles multi-byte content, where byte offsets and string indices diverge", () => {
+    // Go counts bytes; a JS string is indexed in UTF-16 code units. A naive slice
+    // would land mid-character and silently return the wrong text.
+    const { text, files } = layout([
+      ["注释.go", "// 中文注释\npackage a"],
+      ["emoji.md", "done ✅ 🎉"],
+      ["plain.go", "package b"],
+    ]);
+    expect(readBodies(text, files)).toEqual(["// 中文注释\npackage a", "done ✅ 🎉", "package b"]);
+  });
+
+  it("returns undefined for a transcript recorded before the offsets existed", () => {
+    // Rather than guessing: an old transcript's entries carry no range, and a row with
+    // no content beats a row showing the wrong file's.
+    expect(readBodies("==> a.go <==\npackage a", [{ path: "a.go", total_lines: 1 }])).toEqual([undefined]);
+  });
+});
+
+// liveTodos feeds the bar pinned above the composer. It has to agree with the
+// supersede pass below in every case, because the two together decide which copy
+// of the plan a reader is looking at: disagreement puts a stale list in the fixed
+// position, which is worse than the scrolling card it replaced.
+describe("liveTodos", () => {
+  const todoCall = (id: string) => ({ type: "tool_use" as const, id, name: "todo" as const, input: {} });
+  const listOf = (id: string, tasks: string[], over: Partial<ToolResult> = {}): ToolResult =>
+    result(id, {
+      name: "todo",
+      details: { todos: tasks.map((task) => ({ task, status: "pending" as const })) },
+      ...over,
+    });
+
+  it("returns the newest settled list", () => {
+    const todos = liveTodos(
+      buildTimeline(
+        [assistant("m1", [todoCall("c1")]), assistant("m2", [todoCall("c2")])],
+        { c1: listOf("c1", ["old"]), c2: listOf("c2", ["new one", "new two"]) },
+        emptyLive(),
+      ),
+    );
+    expect(todos?.map((x) => x.task)).toEqual(["new one", "new two"]);
+  });
+
+  it("keeps the last good list when a later write was rejected", () => {
+    const todos = liveTodos(
+      buildTimeline(
+        [assistant("m1", [todoCall("c1")]), assistant("m2", [todoCall("c2")])],
+        { c1: listOf("c1", ["good"]), c2: listOf("c2", ["bad"], { is_error: true, text: "at most one" }) },
+        emptyLive(),
+      ),
+    );
+    expect(todos?.map((x) => x.task)).toEqual(["good"]);
+  });
+
+  it("treats a cleared list as no plan", () => {
+    // The bar disappears rather than pinning "0/0" for the rest of the session:
+    // the point of the fixed position is that it says what is happening now.
+    const todos = liveTodos(
+      buildTimeline(
+        [assistant("m1", [todoCall("c1")]), assistant("m2", [todoCall("c2")])],
+        { c1: listOf("c1", ["a"]), c2: listOf("c2", []) },
+        emptyLive(),
+      ),
+    );
+    expect(todos).toBeUndefined();
+  });
+
+  it("is undefined when nothing wrote a list", () => {
+    expect(liveTodos(buildTimeline([user("u1", "hi")], {}, emptyLive()))).toBeUndefined();
   });
 });
 

@@ -139,3 +139,19 @@ func (s *Server) handleWorkspaceJournalClear(w http.ResponseWriter, r *http.Requ
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
+
+// handleWorkspaceGit reports the workspace's version control state.
+//
+// It sits next to the journal endpoints because it answers the other half of
+// "what is the state of my files". The journal knows what this agent touched
+// since a baseline it keeps itself; git knows what is committed. Neither
+// subsumes the other, which is why §16's "single change source, does not touch
+// git" still holds: nothing here feeds the changes list.
+//
+// Always 200. A missing repository, a missing git binary and a timeout are all
+// states to render, not errors to handle — the same rule the checkpoint store
+// follows. A panel that showed an error toast because a directory is not a
+// repository would be wrong about which of those two is unusual.
+func (s *Server) handleWorkspaceGit(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.mgr.GitStatus())
+}

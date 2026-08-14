@@ -12,6 +12,8 @@ const props = defineProps<{
   text: string;
   /** wrap long lines instead of scrolling horizontally (live output does). */
   wrap?: boolean;
+  /** prefix each line with its 1-based number (terminal output does). */
+  lineNumbers?: boolean;
 }>();
 
 const lines = computed(() => colorizeLongListing(ansiToLines(props.text)));
@@ -19,6 +21,9 @@ const lines = computed(() => colorizeLongListing(ansiToLines(props.text)));
 
 <template>
   <pre class="ansi" :class="{ wrap }"><span v-for="(line, i) in lines" :key="i"><span
+      v-if="lineNumbers"
+      class="ln"
+    >{{ i + 1 }}</span><span
       v-for="(t, j) in line"
       :key="j"
       :style="t.style"
@@ -37,6 +42,17 @@ const lines = computed(() => colorizeLongListing(ansiToLines(props.text)));
   &.wrap {
     white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  /* Same gutter treatment as CodeBlock's .ln, against this component's dark
+     homes. Inline-block so the text after it keeps its own line box. */
+  .ln {
+    display: inline-block;
+    width: 3.2em;
+    margin-right: 10px;
+    text-align: right;
+    color: #7c818b;
+    user-select: none;
   }
 }
 </style>

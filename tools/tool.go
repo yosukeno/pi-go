@@ -47,8 +47,12 @@ type ExecutionMode int
 const (
 	// Parallel is safe for tools whose effects do not interfere.
 	Parallel ExecutionMode = iota
-	// Sequential forces the whole batch to run one call at a time, matching pi:
-	// a single sequential tool in a batch serializes all of it.
+	// Sequential means this call runs alone: nothing else in its batch overlaps
+	// it, and it acts as a barrier between the calls before and after it.
+	//
+	// It no longer serializes the whole batch, which is what pi does and what this
+	// did until the batch was split into segments — see agent.segments. Parallel
+	// siblings still overlap each other; they just never overlap this.
 	Sequential
 )
 

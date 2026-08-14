@@ -110,6 +110,11 @@ type Agent struct {
 	// counted, and the ratio between them stops being a tokenizer ratio.
 	clearedTokens int64
 
+	// todoReminded is whether this run has already spent its one task-list
+	// closing reminder (see todofinish.go). Reset at the top of every run, and
+	// written only by the run goroutine, like the counters above.
+	todoReminded bool
+
 	// mu guards steering only: pending and running, nothing else.
 	//
 	// It deliberately does not guard messages. Steer is called from another
@@ -536,6 +541,7 @@ func (a *Agent) run(ctx context.Context, prompt string, out chan<- Event) {
 
 	// Initialize tracking for this run
 	a.runStartTime = time.Now()
+	a.todoReminded = false
 	var stagnationHistory []string
 
 	// finish is the single exit: it closes the run to steering and reports
@@ -716,6 +722,16 @@ func (a *Agent) run(ctx context.Context, prompt string, out chan<- Event) {
 			if a.hasPending() {
 				continue
 			}
+			// Last call for the task list. The model has just decided it is
+			// finished; if its own list says otherwise, this is the only moment
+			// anyone can still ask it which of the remaining items are done,
+			// dropped or stuck. Once per run — see todofinish.go.
+			if notice, ok := a.todoFinishNotice(); ok {
+				a.todoReminded = true
+				a.messages = append(a.messages, llm.UserText(notice))
+				a.emit(ctx, out, Event{Kind: EventSteer, Text: notice})
+				continue
+			}
 			break
 		}
 
@@ -736,36 +752,48 @@ func (a *Agent) run(ctx context.Context, prompt string, out chan<- Event) {
 		// on Usage), and adding to them from a batch goroutine would be a race that
 		// -race would catch and a reader would not.
 		delegated := make([]llm.Usage, len(calls))
-		if a.parallelBatch(calls) {
-			// Review the whole batch before running any of it, one call at a
+		// One approval budget for the whole batch, not per segment: it exists to
+		// bound how long one assistant message can leave a run waiting on a person,
+		// and that question does not reset because the batch changed shape.
+		started := time.Now()
+		for _, seg := range a.segments(calls) {
+			if !seg.parallel {
+				// Review and execution interleave on purpose. It is the better
+				// order here: approving the second command after seeing what the
+				// first one did beats approving both blind.
+				//
+				// No budget check, matching what a wholly sequential batch has
+				// always done. The budget answers "how long may a batch sit in the
+				// gate before the rest is refused unreviewed", and refusing a
+				// command whose predecessor's output is the reason to allow it
+				// would trade a wait for a wrong answer.
+				for i := seg.from; i < seg.to; i++ {
+					results[i] = a.runToolCall(ctx, a.review(ctx, calls[i], turn, stop), &delegated[i], out)
+				}
+				continue
+			}
+			// Review the whole segment before running any of it, one call at a
 			// time. The gate is a person: reviewing concurrently means three
 			// approval cards appearing at once, in an order nobody chose, each
 			// with its own countdown. Execution still overlaps — that is what the
-			// parallel batch is for — but the questions are asked in call order.
+			// parallel segment is for — but the questions are asked in call order.
 			//
 			// Asking one at a time means the waits add up, so the phase gets a
 			// budget: see reviewBudgetSpent for why the run cannot be allowed to
 			// spend its whole life here.
-			reviews := make([]reviewedCall, len(calls))
-			started := time.Now()
-			for i, call := range calls {
+			reviews := make([]reviewedCall, seg.to-seg.from)
+			for j := range reviews {
+				i := seg.from + j
 				if a.reviewBudgetSpent(started, i) {
-					reviews[i] = settledCall(call, fmt.Sprintf(
+					reviews[j] = settledCall(calls[i], fmt.Sprintf(
 						"Tool call %q was not executed: the batch spent its whole approval budget (%s) waiting on "+
 							"earlier calls in the same batch. Re-issue it, or ask the user to approve sooner.",
-						call.Name, a.reviewBudget))
+						calls[i].Name, a.reviewBudget))
 					continue
 				}
-				reviews[i] = a.review(ctx, call, turn, stop)
+				reviews[j] = a.review(ctx, calls[i], turn, stop)
 			}
-			a.runBatchParallel(ctx, reviews, results, delegated, out)
-		} else {
-			// A sequential batch interleaves review and execution on purpose. It
-			// is the better order here: approving the second command after seeing
-			// what the first one did beats approving both blind.
-			for i, call := range calls {
-				results[i] = a.runToolCall(ctx, a.review(ctx, call, turn, stop), &delegated[i], out)
-			}
+			a.runBatchParallel(ctx, reviews, results[seg.from:seg.to], delegated[seg.from:seg.to], out)
 		}
 		// A subagent's tokens are the parent's tokens: they were spent on the
 		// parent's behalf, and without this a token budget would bound only the work
@@ -821,21 +849,60 @@ func (a *Agent) run(ctx context.Context, prompt string, out chan<- Event) {
 	})
 }
 
-// parallelBatch reports whether this batch may overlap. Following pi: one
-// sequential tool in the batch serializes all of it.
-func (a *Agent) parallelBatch(calls []llm.Block) bool {
-	if len(calls) < 2 || a.toolExecution == tools.Sequential {
+// segment is a run of consecutive calls in one batch that are dispatched together.
+// The bounds are indices into the batch, [from, to), so that results and delegated
+// slots stay addressed by tool_use position however the batch is carved up.
+type segment struct {
+	from, to int
+	parallel bool
+}
+
+// segments splits a batch into runs of consecutive calls that may overlap.
+//
+// This replaces the rule inherited from pi, which was that one sequential tool in a
+// batch serializes all of it. That rule is safe and too coarse: a turn that reads
+// three files and runs a build has four calls, only one of which cannot overlap, and
+// it used to run all four one at a time. The reads were serialized for a reason that
+// had nothing to do with them.
+//
+// What the coarse rule bought is kept exactly. A sequential call still gets a
+// segment to itself, so it overlaps nothing — which is the whole content of the
+// promise, and the reason bash can keep assuming no sibling is reading a file it is
+// about to rewrite. Grouping is over *consecutive* calls, so a sequential call also
+// still acts as a barrier: nothing before it runs alongside anything after it.
+//
+// The two dispatch shapes are unchanged too, which is why this needed no change to
+// the gate: a parallel segment is reviewed in call order and then executed
+// concurrently, a sequential one interleaves review and execution so a person can
+// see the first command's output before approving the second.
+//
+// A lone parallel call is marked sequential, because dispatching one call through
+// the concurrent path buys nothing and would put it under the approval budget for
+// no reason. That also keeps a single-call batch byte-for-byte what it was.
+func (a *Agent) segments(calls []llm.Block) []segment {
+	var out []segment
+	for i := 0; i < len(calls); {
+		j := i + 1
+		if a.mayOverlap(calls[i]) {
+			for j < len(calls) && a.mayOverlap(calls[j]) {
+				j++
+			}
+		}
+		out = append(out, segment{from: i, to: j, parallel: j-i > 1})
+		i = j
+	}
+	return out
+}
+
+// mayOverlap reports whether one call is allowed to run alongside a sibling.
+func (a *Agent) mayOverlap(c llm.Block) bool {
+	if a.toolExecution == tools.Sequential {
 		return false
 	}
-	for _, c := range calls {
-		t, ok := a.registry.Get(c.Name)
-		// An unknown tool fails instantly, but treat it as sequential anyway
-		// rather than guessing about a tool we know nothing about.
-		if !ok || t.ExecutionMode() == tools.Sequential {
-			return false
-		}
-	}
-	return true
+	t, ok := a.registry.Get(c.Name)
+	// An unknown tool fails instantly, but treat it as sequential anyway rather
+	// than guessing about a tool we know nothing about.
+	return ok && t.ExecutionMode() == tools.Parallel
 }
 
 // runBatchParallel executes already-reviewed calls with a bounded number in

@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
+import { Icon } from "@iconify/vue";
 import AnsiText from "./AnsiText.vue";
 import { detectLanguage, highlightLines } from "./highlight";
+import { languageIcon, terminalIcon } from "./fileIcons";
 
 // A code viewer with syntax colouring, a collapse and a copy button.
 //
@@ -50,6 +52,10 @@ const label = computed(() => {
   return props.lang || t("codeBlock.text");
 });
 
+// The badge carries a file-type icon so the language reads as a tag rather than
+// as one more button next to copy/collapse.
+const badgeIcon = computed(() => (props.terminal ? terminalIcon : languageIcon(props.lang)));
+
 async function copy() {
   try {
     await navigator.clipboard.writeText(props.code);
@@ -64,7 +70,7 @@ async function copy() {
 <template>
   <div class="code-block" :class="{ terminal }">
     <div class="bar">
-      <span class="lang">{{ label }}</span>
+      <span class="lang"><Icon class="kind" :icon="badgeIcon" />{{ label }}</span>
       <span class="count">{{ t("codeBlock.lineCount", { n: rowCount }) }}</span>
       <button class="ghost" @click="copy">{{ copied ? t("common.copied") : t("common.copy") }}</button>
       <button v-if="collapsible" class="ghost" @click="expanded = !expanded">
@@ -72,7 +78,7 @@ async function copy() {
       </button>
     </div>
     <div class="body" :style="{ maxHeight }">
-      <AnsiText v-if="terminal" :text="plain" />
+      <AnsiText v-if="terminal" :text="plain" line-numbers />
       <pre v-else><code><span v-for="(line, i) in lines" :key="i" class="row"><span
         v-if="lineNumbers" class="ln">{{ startLine + i }}</span><span class="txt"><span
         v-for="(tok, j) in line" :key="j" :class="tok.kind">{{ tok.text }}</span></span></span></code></pre>
@@ -90,13 +96,27 @@ async function copy() {
   background: var(--el-fill-color-lighter);
 
   &.terminal {
-    background: #1e1f22;
-    border-color: #2c2e33;
+    background: var(--pg-term-bg);
+    border-color: var(--pg-term-line);
 
     .body,
     .lang,
     .count {
-      color: #d6d7db;
+      color: var(--pg-term-fg);
+    }
+
+    /* The label pill and the collapsed fade are otherwise driven by the skin's
+       surface vars (--el-fill-color*), which on this dark block read as a pale
+       pill and a pale band washing out the last lines of output. Pull both onto
+       the terminal's own ramp — which is a skin token too, so a light skin's
+       output block still comes from its own family's dark palette. */
+    .lang {
+      background: var(--pg-term-fill);
+      border-color: var(--pg-term-line);
+    }
+
+    .fade {
+      background: linear-gradient(transparent, var(--pg-term-bg));
     }
   }
 }
@@ -111,8 +131,25 @@ async function copy() {
   border-bottom: 1px solid var(--el-border-color-lighter);
 }
 
+/* A tag, not a control: icon + name on a filled pill, so the eye separates it
+   from the copy/collapse buttons on the other end of the bar. */
 .lang {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px 1px 5px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 10px;
+  background: var(--el-fill-color);
+  color: var(--el-text-color-regular);
   font-weight: 600;
+  line-height: 1.7;
+
+  .kind {
+    width: 13px;
+    height: 13px;
+    flex: 0 0 auto;
+  }
 }
 
 .count {
@@ -165,30 +202,32 @@ async function copy() {
 }
 
 // A restrained palette: the point is to find a string or a comment at a glance,
-// not to turn the file into a rainbow.
+// not to turn the file into a rainbow. Six slots, mapped onto colours the skin
+// already declares (theme/build.ts), so a code block is in the same family as the
+// interface around it and is legible on a dark skin without a second theme file.
 .comment {
-  color: #6a737d;
+  color: var(--pg-syn-comment);
   font-style: italic;
 }
 
 .string {
-  color: #0a6640;
+  color: var(--pg-syn-string);
 }
 
 .number {
-  color: #005cc5;
+  color: var(--pg-syn-number);
 }
 
 .keyword {
-  color: #b31d28;
+  color: var(--pg-syn-keyword);
 }
 
 .type {
-  color: #6f42c1;
+  color: var(--pg-syn-type);
 }
 
 .func {
-  color: #795e26;
+  color: var(--pg-syn-func);
 }
 
 .fade {

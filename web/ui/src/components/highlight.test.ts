@@ -4,7 +4,23 @@ import { detectLanguage, highlightLines, tokenize, type Language, type Token } f
 const text = (tokens: Token[]) => tokens.map((t) => t.text).join("");
 const kindOf = (tokens: Token[], needle: string) => tokens.find((t) => t.text === needle)?.kind;
 
-const languages: Language[] = ["go", "ts", "json", "shell", "yaml", "markdown", "plain"];
+const languages: Language[] = [
+  "go",
+  "ts",
+  "java",
+  "c",
+  "python",
+  "rust",
+  "sql",
+  "yara",
+  "css",
+  "xml",
+  "json",
+  "shell",
+  "yaml",
+  "markdown",
+  "plain",
+];
 
 describe("tokenize", () => {
   // The one invariant that makes a wrong guess harmless: a mis-scanned token can
@@ -38,6 +54,38 @@ describe("tokenize", () => {
     expect(kindOf(tokens, "// note")).toBe("comment");
     // `add(` is a call site, not a keyword.
     expect(kindOf(tokens, "add")).toBe("func");
+  });
+
+  it("colours a YARA rule without mistaking // for a regex literal", () => {
+    const src =
+      'rule Demo {\n  meta:\n    author = "x"\n  strings:\n    $a = "mz" nocase\n' +
+      "    $b = /beacon[0-9]+/\n  condition:\n    uint16(0) == 0x5a4d and any of them // done\n}";
+    const tokens = tokenize(src, "yara");
+    expect(text(tokens)).toBe(src);
+    expect(kindOf(tokens, "rule")).toBe("keyword");
+    expect(kindOf(tokens, "condition")).toBe("keyword");
+    expect(kindOf(tokens, "nocase")).toBe("type");
+    expect(kindOf(tokens, "uint16")).toBe("type");
+    expect(kindOf(tokens, "/beacon[0-9]+/")).toBe("string");
+    expect(kindOf(tokens, "// done")).toBe("comment");
+  });
+
+  it("colours Java and Python keywords and types", () => {
+    const java = tokenize("public class A { private int n = 1; }", "java");
+    expect(kindOf(java, "class")).toBe("keyword");
+    expect(kindOf(java, "int")).toBe("type");
+
+    const python = tokenize('def f(x: int) -> str:\n    return "a"  # note', "python");
+    expect(kindOf(python, "def")).toBe("keyword");
+    expect(kindOf(python, "str")).toBe("type");
+    expect(kindOf(python, "# note")).toBe("comment");
+  });
+
+  it("matches SQL keywords regardless of case", () => {
+    const tokens = tokenize("SELECT id FROM t WHERE x = 1 -- note", "sql");
+    expect(kindOf(tokens, "SELECT")).toBe("keyword");
+    expect(kindOf(tokens, "FROM")).toBe("keyword");
+    expect(kindOf(tokens, "-- note")).toBe("comment");
   });
 
   it("does not treat comment markers inside a string as a comment", () => {

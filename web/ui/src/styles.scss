@@ -1,18 +1,199 @@
+/* The design tokens.
+ *
+ * Every component in this app styles against Element Plus' CSS variables rather
+ * than against literals — deliberately, and this file is why: the theme is one
+ * layer of variable overrides, so changing the palette does not mean touching
+ * forty scoped stylesheets. The rule that keeps it that way is that a component
+ * may use var(--el-…) or var(--pg-…) and nothing else.
+ *
+ * WHICH LAYER WINS: the :root block below is the boot paint and the fallback. The
+ * live skin is written as inline custom properties on <html> by src/theme, before
+ * the app mounts, and inline properties beat this block without a specificity
+ * argument. Everything here is therefore Paper — the default skin — duplicated in
+ * CSS so the shell is never unstyled if the script is slow, plus the tokens that
+ * are structural rather than chromatic (the measure, the radii, the mono stack),
+ * which no skin overrides.
+ *
+ * The palette is warm paper rather than the greyscale this used to be. Pure
+ * neutral grey on white is the default every framework ships, and a long
+ * transcript in it reads as a spreadsheet: nothing on the page tells the eye
+ * where the chrome ends and the conversation begins. Warming the neutrals by a
+ * few degrees does that work without adding a single coloured element — the
+ * sidebar and the dock sit on paper, the conversation sits on white, and the
+ * boundary needs no border to be legible.
+ *
+ * The accent is clay. It is the only saturated colour in the interface and it is
+ * spent on exactly one thing: state that is alive right now — the streaming
+ * turn's rail, the live dot, the progress fill, the focus ring, the active
+ * session. Not on affirmative actions: Send stays ink, because black on paper is
+ * the strongest contrast available and the one button that always means "go"
+ * should not have to compete with a progress bar for it.
+ *
+ * Semantic colours keep their meanings and are pulled towards the same warmth so
+ * they read as part of the same set: danger is a true red rather than a second
+ * clay, and warning is amber rather than orange, so neither can be mistaken for
+ * the accent in a corner of the eye.
+ */
 :root {
   color-scheme: light;
 
-  /* The whole UI is black & white by decision: Element's blue primary ramp is
-     rewritten to a greyscale one, so every place styling against
-     --el-color-primary (active session bar, send button, focus rings, live
-     dots, checks, links) follows at once. Semantic colours (warning / danger /
-     success) are left alone — they carry meaning, not decoration. */
-  --el-color-primary: #1a1a1a;
-  --el-color-primary-light-3: #5f5f5f;
-  --el-color-primary-light-5: #8d8d8d;
-  --el-color-primary-light-7: #bababa;
-  --el-color-primary-light-8: #d1d1d1;
-  --el-color-primary-light-9: #e8e8e8;
-  --el-color-primary-dark-2: #000000;
+  /* ── Accent (clay) ──────────────────────────────────────────────────────
+     Overriding the primary ramp is what makes every place that already styles
+     against --el-color-primary follow at once: focus rings, the active session
+     bar, live dots, the todo progress fill, links, the turn rail. */
+  --el-color-primary: #bd5f3c;
+  --el-color-primary-light-3: #cd8163;
+  --el-color-primary-light-5: #dba38b;
+  --el-color-primary-light-7: #e9c7b6;
+  --el-color-primary-light-8: #f1dbd0;
+  --el-color-primary-light-9: #f9eee8;
+  --el-color-primary-dark-2: #9c4b2d;
+
+  /* ── Semantic ───────────────────────────────────────────────────────────
+     These carry meaning, so they are tuned rather than replaced. Each keeps a
+     -light-9 tint, which is what the notice strips and status pills wash with. */
+  --el-color-success: #2f8659;
+  --el-color-success-light-3: #5aa27c;
+  --el-color-success-light-5: #85bd9f;
+  --el-color-success-light-7: #b0d7c1;
+  --el-color-success-light-8: #c6e2d3;
+  --el-color-success-light-9: #ebf5f0;
+  --el-color-warning: #b07d1c;
+  --el-color-warning-light-3: #c39a4f;
+  --el-color-warning-light-5: #d7b782;
+  --el-color-warning-light-7: #ead4b5;
+  --el-color-warning-light-8: #f1e3cf;
+  --el-color-warning-light-9: #faf2e4;
+  --el-color-danger: #c0392b;
+  --el-color-danger-light-3: #d06255;
+  --el-color-danger-light-5: #df8b81;
+  --el-color-danger-light-7: #edb5ad;
+  --el-color-danger-light-8: #f4cac4;
+  --el-color-danger-light-9: #fbedeb;
+  --el-color-error: #c0392b;
+  --el-color-error-light-3: #d06255;
+  --el-color-error-light-5: #df8b81;
+  --el-color-error-light-7: #edb5ad;
+  --el-color-error-light-8: #f4cac4;
+  --el-color-error-light-9: #fbedeb;
+  --el-color-info: #79736a;
+  --el-color-info-light-3: #9b968f;
+  --el-color-info-light-5: #bcb9b4;
+  --el-color-info-light-7: #dedcd9;
+  --el-color-info-light-8: #eceae8;
+  --el-color-info-light-9: #f6f5f4;
+
+  /* ── Surfaces ───────────────────────────────────────────────────────────
+     Two levels, and the difference between them is the layout: paper is where
+     the chrome lives (sidebar, dock, topbar), white is where content lives
+     (the conversation, the composer card, dialogs). */
+  --el-bg-color: #ffffff;
+  --el-bg-color-page: #f6f5f2;
+  --el-bg-color-overlay: #ffffff;
+
+  /* ── Ink ────────────────────────────────────────────────────────────────
+     Warm near-black rather than #000: on paper, pure black vibrates. */
+  --el-text-color-primary: #22201d;
+  --el-text-color-regular: #46423c;
+  --el-text-color-secondary: #79736a;
+  --el-text-color-placeholder: #a9a29a;
+  --el-text-color-disabled: #c2bbb2;
+
+  /* ── Lines ──────────────────────────────────────────────────────────────
+     Warm and light. Most separation in this UI comes from the surface step
+     above, so borders are here to group, not to divide. */
+  --el-border-color: #d3ccc2;
+  --el-border-color-light: #e1dcd4;
+  --el-border-color-lighter: #e9e5df;
+  --el-border-color-extra-light: #f1eeea;
+  --el-border-color-hover: #b9b1a5;
+  --el-border-color-dark: #c6bfb4;
+  --el-border-color-darker: #aca496;
+
+  /* ── Fills ──────────────────────────────────────────────────────────────
+     The hover/rest/press ladder, and the user bubble's tile. */
+  --el-fill-color-blank: #ffffff;
+  --el-fill-color-extra-light: #fbfaf8;
+  --el-fill-color-lighter: #f7f5f1;
+  --el-fill-color-light: #f2efea;
+  --el-fill-color: #ece8e2;
+  --el-fill-color-dark: #e3ded6;
+  --el-fill-color-darker: #d9d3c9;
+
+  --el-disabled-bg-color: var(--el-fill-color-light);
+  --el-disabled-text-color: var(--el-text-color-disabled);
+  --el-disabled-border-color: var(--el-border-color-light);
+  --el-mask-color: rgba(34, 32, 29, 0.4);
+
+  /* ── Elevation ──────────────────────────────────────────────────────────
+     Warm-tinted and wide rather than grey and tight: a neutral shadow on a warm
+     surface reads as dirt. Two of them, because this UI only ever has two
+     heights — a card resting on the page, and something floating over it. */
+  --el-box-shadow-lighter: 0 1px 2px rgba(43, 35, 26, 0.04);
+  --el-box-shadow-light: 0 1px 2px rgba(43, 35, 26, 0.04), 0 6px 18px rgba(43, 35, 26, 0.06);
+  --el-box-shadow: 0 2px 6px rgba(43, 35, 26, 0.06), 0 14px 38px rgba(43, 35, 26, 0.1);
+  --el-box-shadow-dark: 0 4px 12px rgba(43, 35, 26, 0.1), 0 24px 56px rgba(43, 35, 26, 0.14);
+
+  /* Rounder than Element's 4px default. Nothing in this UI is a data grid; the
+     things with corners are cards, bubbles and pills. */
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-border-radius-round: 999px;
+
+  /* ── App tokens ─────────────────────────────────────────────────────────
+     What Element has no variable for. Prefixed --pg- so the two sets never get
+     confused: an --el- name is a framework contract, a --pg- name is ours. */
+
+  /* The reading column. A conversation is prose, and prose set to a 1900px
+     window is unreadable — the eye loses the line. Both the transcript and the
+     composer are capped by this, so the answer and the box you reply in share
+     one measure. */
+  --pg-measure: 860px;
+
+  --pg-radius-card: 14px;
+  --pg-radius-bubble: 18px;
+
+  /* The focus ring, as one token: every focusable surface in the app draws the
+     same one, which is the only way a keyboard user can learn it. */
+  --pg-ring: 0 0 0 3px rgba(189, 95, 60, 0.16);
+
+  /* Accent washes. color-mix would do this inline, but naming them keeps the
+     percentages from drifting apart between components. */
+  --pg-accent-wash: #f9eee8;
+  --pg-accent-line: rgba(189, 95, 60, 0.28);
+
+  --pg-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", "Consolas", monospace;
+  --pg-transition: 0.15s ease;
+
+  /* The rest of the Paper fallback: the tokens that carry a colour a skin decides.
+     Their real values come from src/theme/build.ts — these exist so a component
+     never renders against an empty var() during the first paint. */
+  --pg-solid: #2b2622;
+  --pg-solid-hover: #443c34;
+  --pg-on-solid: #ffffff;
+  --pg-tooltip-bg: #2b2622;
+  --pg-tooltip-fg: #f6f5f2;
+  --pg-term-bg: #23201d;
+  --pg-term-fg: #d9d5cf;
+  --pg-term-line: #3a352f;
+  --pg-term-fill: #332f2a;
+  --pg-syn-comment: #79736a;
+  --pg-syn-string: #2b7a52;
+  --pg-syn-keyword: #b0352a;
+  --pg-syn-number: #ab5738;
+  --pg-syn-type: #6f568f;
+  --pg-syn-func: #a0731c;
+  --pg-chart-overhead: #7a5ea8;
+  --pg-chart-user: #bd5f3c;
+  --pg-chart-assistant: #2f8659;
+  --pg-chart-tools: #b07d1c;
+  --pg-scroll-thumb: rgba(121, 115, 106, 0.28);
+  --pg-scroll-thumb-strong: rgba(121, 115, 106, 0.4);
+  --pg-scroll-thumb-hover: rgba(121, 115, 106, 0.62);
+  --pg-selection-bg: #f1dbd0;
+  --pg-diagram-node: #f2efea;
+  --pg-diagram-alt: #f8f2e4;
+  --pg-diagram-cluster: #f7f1ee;
 }
 
 * {
@@ -28,26 +209,57 @@ body,
 
 body {
   font-family:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
-    "Microsoft YaHei", sans-serif;
+    -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   font-size: 14px;
   color: var(--el-text-color-primary);
-  background: var(--el-bg-color);
+  background: var(--el-bg-color-page);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Contextual alternates and kerning: free on every system font here, and the
+     difference shows most on the mixed Latin/CJK text this UI is full of. */
+  font-kerning: normal;
+  text-rendering: optimizeLegibility;
 }
 
+::selection {
+  background: var(--pg-selection-bg);
+  color: var(--el-text-color-primary);
+}
+
+/* Scrollbars: thin, warm, and invisible until the pointer is near. A permanent
+   grey bar down every panel is four vertical lines of chrome the layout did not
+   ask for. */
 ::-webkit-scrollbar {
-  width: 9px;
-  height: 9px;
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--el-border-color);
-  border-radius: 5px;
+  background: transparent;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+  box-shadow: inset 0 0 0 10px var(--pg-scroll-thumb);
+}
 
-  &:hover {
-    background: var(--el-border-color-darker);
-  }
+:hover::-webkit-scrollbar-thumb {
+  box-shadow: inset 0 0 0 10px var(--pg-scroll-thumb-strong);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  box-shadow: inset 0 0 0 10px var(--pg-scroll-thumb-hover);
+}
+
+/* One focus ring for the whole app, on :focus-visible only — a mouse click must
+   not leave a ring behind, or every button looks selected after being pressed. */
+:focus-visible {
+  outline: 2px solid var(--el-color-primary);
+  outline-offset: 2px;
 }
 
 /* Fast hover tooltip, replacing the native title= bubble: the OS tooltip
@@ -74,10 +286,10 @@ body {
     width: max-content;
     max-width: 280px;
     padding: 6px 10px;
-    border-radius: 6px;
-    background: rgba(20, 20, 20, 0.92);
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
-    color: #fff;
+    border-radius: 8px;
+    background: var(--pg-tooltip-bg);
+    box-shadow: var(--el-box-shadow-light);
+    color: var(--pg-tooltip-fg);
     font-family:
       -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
       "Microsoft YaHei", sans-serif;
@@ -94,11 +306,41 @@ body {
     transform: translateX(-50%);
     border: 5px solid transparent;
     border-bottom: 0;
-    border-top-color: rgba(20, 20, 20, 0.92);
+    border-top-color: var(--pg-tooltip-bg);
   }
 
   &[data-tip]:hover::before,
   &[data-tip]:hover::after {
     opacity: 1;
   }
+}
+
+/* Element's own chrome, brought in line with the tokens above. Scoped styles
+   cannot reach a teleported dialog or dropdown, so the few places where the
+   framework hardcodes its own geometry are corrected here. */
+.el-dropdown__popper,
+.el-popper {
+  --el-popper-border-radius: 10px;
+}
+
+.el-dropdown-menu {
+  padding: 4px;
+
+  .el-dropdown-menu__item {
+    border-radius: 6px;
+    font-size: 13px;
+
+    &:not(.is-disabled):focus {
+      background: var(--el-fill-color-light);
+      color: var(--el-text-color-primary);
+    }
+  }
+}
+
+.el-message-box {
+  border-radius: var(--pg-radius-card);
+}
+
+.el-button {
+  font-weight: 500;
 }

@@ -182,11 +182,13 @@ func (g *WebGate) remember(scope string, req agent.GateRequest) {
 	case "tool":
 		state = g.policy.AllowTool(req.ToolName)
 	case "command":
-		cmd := commandOf(req.Args)
-		if cmd == "" {
+		// The key, not the bare command: the grant covers the call the user actually
+		// looked at, workdir included. See grantKeyOf.
+		key := grantKeyOf(req.Args)
+		if key == "" {
 			return
 		}
-		state = g.policy.AllowCommand(cmd)
+		state = g.policy.AllowCommand(key)
 	default:
 		return
 	}

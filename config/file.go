@@ -130,12 +130,17 @@ func Path() (string, error) {
 // Load merges the user's configuration into the catalog.
 //
 // Returns warnings rather than printing them, so the caller decides where
-// diagnostics go — in json mode they must not reach stdout. A missing file is not
-// an error and not a warning: running with no configuration is the normal case.
+// diagnostics go — in json mode they must not reach stdout.
 //
-// A malformed file *is* an error. The alternative, carrying on with the built-ins,
-// would mean a typo silently changes which endpoint receives the credential, and
-// the user would have no way to notice.
+// This fork compiles in no providers or models, so the file is the only source:
+// a missing file, or one that declares no models, is an error that says where to
+// create the file and what a minimal one looks like. (Upstream treats a missing
+// file as the normal case because it ships built-ins; with an empty built-in
+// catalog, "carry on" would mean a later catalog[0] panic.)
+//
+// A malformed file *is* an error. The alternative, carrying on regardless, would
+// mean a typo silently changes which endpoint receives the credential, and the
+// user would have no way to notice.
 func Load() (warnings []string, err error) {
 	path, err := Path()
 	if err != nil {
@@ -144,7 +149,10 @@ func Load() (warnings []string, err error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, fmt.Errorf("no provider configuration: create %s "+
+				"(set %s to point elsewhere). No models are compiled in, so there is "+
+				"nothing to run without it. Minimal file:\n%s",
+				path, PathEnv, minimalConfig)
 		}
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
@@ -161,12 +169,27 @@ func Load() (warnings []string, err error) {
 	if err != nil {
 		return warnings, fmt.Errorf("%s: %w", path, err)
 	}
+	if len(ms) == 0 {
+		return warnings, fmt.Errorf("%s declares no models: add at least one entry "+
+			"to \"models\" — with nothing compiled in, the file is the only source", path)
+	}
 	providers, catalog = ps, ms
 	if def != "" {
 		defaultModel = def
 	}
 	return warnings, nil
 }
+
+// minimalConfig is the example Load points a first-time user at: one provider,
+// one model, every field spelled the way the decoder expects.
+const minimalConfig = `{
+  "providers": {
+    "zhipu": { "base_url": "https://open.bigmodel.cn/api/coding/paas/v4", "key_env": "ZHIPU_API_KEY" }
+  },
+  "models": [
+    { "id": "glm-5.2", "provider": "zhipu", "context_window": 1048576, "max_tokens": 16384 }
+  ]
+}`
 
 // WarnIfInWorkingDir reports a configuration file found somewhere it will not be
 // read from.

@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/yosukeno/pi-go/session"
+	"github.com/yosukeno/pi-go/tools"
 )
 
 // SessionStats contains all computed statistics for a session.
@@ -48,12 +49,56 @@ type TokenAnalysis struct {
 }
 
 // BatchDistribution tracks how many tool calls were made per turn.
+//
+// The three fields past BySize exist to answer one question the counts cannot:
+// whether batching is actually buying anything. A batch of four is only worth more
+// than four batches of one if the four overlap, and in this harness they do not when
+// any of them is a sequential tool — one such call serializes the whole batch (see
+// agent.parallelBatch). So the size distribution alone can look healthy while every
+// batch runs one at a time.
 type BatchDistribution struct {
 	TotalCalls int         `json:"total_calls"`
 	Singles    int         `json:"singles"`  // 1 call
 	Doubles    int         `json:"doubles"`  // 2 calls
 	Multiple   int         `json:"multiple"` // 3+ calls
 	BySize     map[int]int `json:"by_size"`  // count for each batch size
+	// AverageCalls is calls per tool-calling turn. Anthropic's own check for whether
+	// parallel tool use is working at all is this number being meaningfully above
+	// 1.0, so it is reported rather than left to the reader's division.
+	AverageCalls float64 `json:"average_calls"`
+	// Combos counts turns by the set of tools they called, names sorted and joined
+	// with "+" so that read+bash and bash+read are one entry. This is what says
+	// which batches a harness change would even touch.
+	Combos map[string]int `json:"combos,omitempty"`
+	// Stalled counts parallel-capable calls that shared a batch with a sequential
+	// one, and therefore ran one at a time for a reason that had nothing to do with
+	// them. It is the size of the prize for making the batch rule finer-grained, and
+	// zero is a real answer: it means the rule costs this workload nothing.
+	Stalled int `json:"stalled_by_sequential_sibling"`
+}
+
+// sequentialByName reports, per tool name, whether that tool refuses to overlap a
+// sibling. Read from the tools' own declarations rather than a list kept here, so a
+// tool changing its mind cannot leave this report quietly wrong.
+//
+// tools.Default covers the seven that touch the workspace. todo and subagent are
+// registered only for a top-level session and are absent here; both declare
+// Parallel, so their absence gives the right answer today. A future sequential tool
+// outside the default set would have to be added.
+var sequentialByName = func() map[string]bool {
+	m := map[string]bool{}
+	for _, t := range tools.Default(".").All() {
+		m[t.Name()] = t.ExecutionMode() == tools.Sequential
+	}
+	return m
+}()
+
+// comboKey names a batch by its tool set, order-insensitively.
+func comboKey(names []string) string {
+	sorted := make([]string, len(names))
+	copy(sorted, names)
+	sort.Strings(sorted)
+	return strings.Join(sorted, "+")
 }
 
 // ToolTimingAnalysis aggregates tool execution timing.
@@ -197,7 +242,7 @@ func AnalyzeSession(path string, config Config) (*SessionStats, error) {
 		SessionPath:     path,
 		Turns:           []TurnStats{},
 		TokenUsage:      TokenAnalysis{},
-		BatchSizes:      BatchDistribution{BySize: make(map[int]int)},
+		BatchSizes:      BatchDistribution{BySize: make(map[int]int), Combos: make(map[string]int)},
 		ToolTiming:      ToolTimingAnalysis{ByTool: make(map[string]ToolStats)},
 		RetryStats:      RetryAnalysis{RetriesByTurn: make(map[int]int), Reasons: make(map[string]int)},
 		TruncationStats: TruncationAnalysis{},
@@ -233,9 +278,10 @@ func AnalyzeSession(path string, config Config) (*SessionStats, error) {
 	lastTime := records[len(records)-1].Time
 	stats.Duration = lastTime - firstTime
 
-	// Group records by turn (message chains)
+	// Group records by turn (message chains). The names are kept, not just the
+	// count: which tools shared a batch is what decides whether the batch overlapped.
 	turnNumber := 0
-	toolCountsByTurn := make(map[int]int)
+	toolNamesByTurn := make(map[int][]string)
 
 	// Process records to compute statistics
 	for _, r := range records {
@@ -260,23 +306,25 @@ func AnalyzeSession(path string, config Config) (*SessionStats, error) {
 				turnNumber++
 
 				// Count tool calls from content
-				toolCount := 0
+				var names []string
 				for _, block := range r.Message.Content {
 					if block.Type == "tool_use" {
-						toolCount++
+						names = append(names, block.Name)
 					}
 				}
-				if toolCount > 0 {
-					toolCountsByTurn[turnNumber] = toolCount
+				if len(names) > 0 {
+					toolNamesByTurn[turnNumber] = names
 				}
 			}
 		}
 	}
 
 	// Compute batch distribution
-	for _, count := range toolCountsByTurn {
+	for _, names := range toolNamesByTurn {
+		count := len(names)
 		stats.BatchSizes.TotalCalls += count
 		stats.BatchSizes.BySize[count]++
+		stats.BatchSizes.Combos[comboKey(names)]++
 		switch count {
 		case 1:
 			stats.BatchSizes.Singles++
@@ -287,6 +335,25 @@ func AnalyzeSession(path string, config Config) (*SessionStats, error) {
 				stats.BatchSizes.Multiple++
 			}
 		}
+		// A lone call has nothing to overlap with, so it is never stalled however
+		// sequential it is.
+		if count < 2 {
+			continue
+		}
+		sequential, parallel := 0, 0
+		for _, name := range names {
+			if sequentialByName[name] {
+				sequential++
+			} else {
+				parallel++
+			}
+		}
+		if sequential > 0 {
+			stats.BatchSizes.Stalled += parallel
+		}
+	}
+	if turns := len(toolNamesByTurn); turns > 0 {
+		stats.BatchSizes.AverageCalls = float64(stats.BatchSizes.TotalCalls) / float64(turns)
 	}
 
 	// Compute averages
@@ -492,6 +559,8 @@ func FormatText(stats *SessionStats) string {
 
 	builder.WriteString(fmt.Sprintf("Tool Call Distribution:\n"))
 	builder.WriteString(fmt.Sprintf("  Total Calls: %d\n", stats.BatchSizes.TotalCalls))
+	builder.WriteString(fmt.Sprintf("  Average per tool-calling turn: %.2f (>1 means batches are happening)\n",
+		stats.BatchSizes.AverageCalls))
 	builder.WriteString(fmt.Sprintf("  Singles (1 call): %d\n", stats.BatchSizes.Singles))
 	builder.WriteString(fmt.Sprintf("  Doubles (2 calls): %d\n", stats.BatchSizes.Doubles))
 	builder.WriteString(fmt.Sprintf("  Multiple (3+ calls): %d\n", stats.BatchSizes.Multiple))
@@ -507,6 +576,25 @@ func FormatText(stats *SessionStats) string {
 			builder.WriteString(fmt.Sprintf("    %d calls: %d turns\n", size, stats.BatchSizes.BySize[size]))
 		}
 	}
+	// Sorted by frequency: the question is which batch shape dominates, and
+	// alphabetical order makes that a hunt.
+	if len(stats.BatchSizes.Combos) > 0 {
+		builder.WriteString(fmt.Sprintf("  By Tool Set:\n"))
+		combos := make([]string, 0, len(stats.BatchSizes.Combos))
+		for c := range stats.BatchSizes.Combos {
+			combos = append(combos, c)
+		}
+		sort.Slice(combos, func(i, j int) bool {
+			if a, b := stats.BatchSizes.Combos[combos[i]], stats.BatchSizes.Combos[combos[j]]; a != b {
+				return a > b
+			}
+			return combos[i] < combos[j]
+		})
+		for _, c := range combos {
+			builder.WriteString(fmt.Sprintf("    %-28s %d turn(s)\n", c, stats.BatchSizes.Combos[c]))
+		}
+	}
+	builder.WriteString(fmt.Sprintf("  Serialized by a sequential sibling: %d call(s)\n", stats.BatchSizes.Stalled))
 	builder.WriteString("\n")
 
 	builder.WriteString(fmt.Sprintf("Tool Timing:\n"))

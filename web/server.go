@@ -120,6 +120,7 @@ func newPanelProxy(p Panel) *httputil.ReverseProxy {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/models", s.handleModels)
 	s.mux.HandleFunc("GET /api/skills", s.handleSkills)
+	s.mux.HandleFunc("GET /api/starters", s.handleStarters)
 	s.mux.HandleFunc("GET /api/panels", s.handlePanels)
 	// Panel proxy: content, not operations, so like the page itself it is not
 	// token-gated (see the Panel doc). Bare /panels/<name> redirects to the
@@ -143,6 +144,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/workspace/changes", s.handleWorkspaceChanges)
 	s.mux.HandleFunc("GET /api/workspace/diff", s.handleWorkspaceDiff)
 	s.mux.HandleFunc("POST /api/workspace/journal/clear", s.handleWorkspaceJournalClear)
+	s.mux.HandleFunc("GET /api/workspace/git", s.handleWorkspaceGit)
 	s.mux.HandleFunc("/", s.handleUI)
 }
 
@@ -341,6 +343,74 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"skills": out})
+}
+
+// handleStarters serves the cards an empty conversation offers. The content is
+// the skill's, not pi-go's: a deployment describes its own openings, and this
+// server only checks that each one can actually do something.
+//
+// Read per request so an edited starters.json shows up on reload — the same
+// reason /skill:name re-reads the instructions. The files are small and this is
+// fetched once per page.
+func (s *Server) handleStarters(w http.ResponseWriter, r *http.Request) {
+	warn := func(format string, args ...any) {
+		if s.opts.Logger != nil {
+			s.opts.Logger.Printf(format, args...)
+		}
+	}
+	all, diags := skills.LoadStarters(s.mgr.Skills())
+	for _, d := range diags {
+		warn("starters: %s: %s", d.Path, d.Message)
+	}
+
+	registered := map[string]bool{}
+	for _, p := range s.opts.Panels {
+		registered[p.Name] = true
+	}
+
+	// One empty state, so the first heading and the first send flag win; cards
+	// concatenate in skill order and stop at the layout's limit.
+	// A card pointing at a panel this process never registered would be a button
+	// that does nothing, which is worse than one card fewer.
+	keepable := func(skill string, cards []skills.StarterCard) []skills.StarterCard {
+		out := make([]skills.StarterCard, 0, len(cards))
+		for _, c := range cards {
+			if c.Panel != "" && !registered[c.Panel] {
+				warn("starters: %s: card %q names unregistered panel %q; skipped", skill, c.Title, c.Panel)
+				continue
+			}
+			out = append(out, c)
+		}
+		return out
+	}
+
+	out := struct {
+		Heading   string                 `json:"heading,omitempty"`
+		Send      bool                   `json:"send,omitempty"`
+		Cards     []skills.StarterCard   `json:"cards"`
+		Followups []skills.FollowupGroup `json:"followups"`
+	}{Cards: []skills.StarterCard{}, Followups: []skills.FollowupGroup{}}
+
+	for _, st := range all {
+		if out.Heading == "" {
+			out.Heading = st.Heading
+			out.Send = st.Send
+		}
+		for _, c := range keepable(st.Skill, st.Cards) {
+			if len(out.Cards) == skills.MaxStarterCards {
+				break
+			}
+			out.Cards = append(out.Cards, c)
+		}
+		for _, g := range st.Followups {
+			// A group whose chips all pointed at missing panels would render an
+			// empty row, so it drops out with them.
+			if chips := keepable(st.Skill, g.Chips); len(chips) > 0 {
+				out.Followups = append(out.Followups, skills.FollowupGroup{When: g.When, Chips: chips})
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"starters": out})
 }
 
 func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
@@ -608,6 +678,9 @@ type controlRequest struct {
 	Reason   string          `json:"reason"`
 	Remember string          `json:"remember"`
 
+	// Mode is read by two actions, which never co-occur: set_policy's approval
+	// mode, and rewind's "chat" | "files" | "both". This struct is a flat bag
+	// interpreted per action — Turns and AllowTool below are shared the same way.
 	Mode         string `json:"mode"`
 	Turns        int    `json:"turns"`
 	AllowTool    string `json:"allow_tool"`
@@ -623,9 +696,13 @@ type controlRequest struct {
 	// MessageID identifies the timeline message a rewind forks away from.
 	MessageID string `json:"message_id"`
 
-	// Files asks rewind to restore the workspace to the checkpoint taken when
-	// the message was sent, not just to fork the conversation.
-	Files bool `json:"files"`
+	// Rewind reads Mode above for what to act on. It replaced a files bool,
+	// because a bool could not express the third state — restore the work tree and
+	// leave the conversation where it is.
+	//
+	// Paths narrows a file restore to a subset of what the preview listed. Empty
+	// means the whole checkpoint. Only meaningful for the two file modes.
+	Paths []string `json:"paths"`
 }
 
 func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
@@ -667,7 +744,9 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, errors.New("message_id is required"))
 			return
 		}
-		err := sess.Rewind(req.MessageID, req.Files)
+		// No default mode. A rewind is destructive, and guessing which half of it
+		// was meant is the one place a helpful default would be dangerous.
+		err := sess.Rewind(req.MessageID, RewindMode(req.Mode), req.Paths)
 		switch {
 		case errors.Is(err, ErrRunActive):
 			writeErr(w, http.StatusConflict, err)
@@ -675,6 +754,8 @@ func (s *Server) handleControl(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, err)
 		case errors.Is(err, errFilesUnavailable):
 			writeErr(w, http.StatusUnprocessableEntity, err)
+		case errors.Is(err, errRewindMode):
+			writeErr(w, http.StatusBadRequest, err)
 		case err != nil:
 			writeErr(w, http.StatusInternalServerError, err)
 		default:

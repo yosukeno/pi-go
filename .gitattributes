@@ -1,0 +1,5 @@
+# Golden test data is compared byte for byte, so it must not be line-ending
+# converted on checkout. Without this, a Windows clone with core.autocrlf=true
+# gets CRLF fixtures and the patch/replay parsers fail on a trailing \r that
+# exists only on that machine.
+web/ui/src/agent/__fixtures__/** -text

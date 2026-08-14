@@ -6,7 +6,6 @@ export default {
     "zh-CN": {
       lang: { label: "语言" },
       flash: {
-        noToken: "URL 里没有 token，请用 pi-go 启动时打印的那个地址打开",
         loadSessionsFailed: "读取会话列表失败：{msg}",
         createFailed: "新建会话失败：{msg}",
         deleteBusy: "这个会话正在跑，先停下来再删",
@@ -27,6 +26,7 @@ export default {
         copyFailed: "复制失败",
         rewindBusy: "会话正在跑，先停下来再撤回",
         rewindFailed: "撤回失败：{msg}",
+        rewindFilesDone: "已恢复 {n} 个文件，对话未改动",
       },
       commands: {
         auto: "全自动审批，可限 n 轮（/auto 3、/auto off）",
@@ -66,6 +66,15 @@ export default {
       topbar: {
         files: "工作区文件",
       },
+      dock: {
+        hub: "面板",
+        shell: "Shell",
+        switchTenant: "切换面板",
+        maximize: "最大化",
+        restore: "还原大小",
+        toStacked: "底部布局",
+        toSideBySide: "右侧布局",
+      },
       notice: {
         policyReverted: "全自动已到期，回到 standard 模式（{reason}）",
         retrying: "正在重试 {attempt}/{max}，等待 {delay}：{reason}",
@@ -101,6 +110,10 @@ export default {
         title: "撤回这条消息？",
         desc: "这条消息及之后的所有对话都会被撤回，原文会放回输入框。",
         bothTitle: "撤回对话，并恢复文件",
+        filesTitle: "只恢复文件，保留对话",
+        filesDesc: "适合这一轮的思路有用、但改动改坏了的情况",
+        pickHint: "点一行可以把它排除在外",
+        pickTitle: "点击切换：是否恢复这个文件",
         bothDesc: "工作区回到这条消息发出时的状态",
         filesHead: "以下 {n} 个文件将受影响",
         binary: "二进制",
@@ -119,7 +132,6 @@ export default {
     en: {
       lang: { label: "Language" },
       flash: {
-        noToken: "The URL has no token — open the address pi-go printed at startup.",
         loadSessionsFailed: "Failed to load sessions: {msg}",
         createFailed: "Failed to create session: {msg}",
         deleteBusy: "This session is still running — stop it before deleting.",
@@ -141,6 +153,7 @@ export default {
         copyFailed: "Copy failed",
         rewindBusy: "The session is still running — stop it before rewinding.",
         rewindFailed: "Rewind failed: {msg}",
+        rewindFilesDone: "Restored {n} file(s); the conversation is unchanged.",
       },
       commands: {
         auto: "Fully automatic approval, optionally limited to n turns (/auto 3, /auto off)",
@@ -181,6 +194,15 @@ export default {
       topbar: {
         files: "Workspace files",
       },
+      dock: {
+        hub: "Panel",
+        shell: "Shell",
+        switchTenant: "Switch panel",
+        maximize: "Maximize",
+        restore: "Restore size",
+        toStacked: "Dock to bottom",
+        toSideBySide: "Dock to right",
+      },
       notice: {
         policyReverted: "Auto mode expired; back to standard mode ({reason})",
         retrying: "Retrying {attempt}/{max}, waiting {delay}: {reason}",
@@ -218,6 +240,10 @@ export default {
         title: "Rewind this message?",
         desc: "This message and everything after it will be withdrawn; the original text goes back into the input box.",
         bothTitle: "Rewind the chat and restore files",
+        filesTitle: "Restore files only, keep the chat",
+        filesDesc: "For a turn whose reasoning was useful and whose edit was not",
+        pickHint: "Click a row to leave it out",
+        pickTitle: "Click to include or exclude this file",
         bothDesc: "The workspace returns to its state when this message was sent",
         filesHead: "The following {n} files will be affected",
         binary: "binary",
@@ -236,7 +262,6 @@ export default {
     ja: {
       lang: { label: "言語" },
       flash: {
-        noToken: "URL に token がありません。pi-go 起動時に表示されたアドレスを開いてください。",
         loadSessionsFailed: "セッション一覧の読み込みに失敗しました：{msg}",
         createFailed: "セッションの作成に失敗しました：{msg}",
         deleteBusy: "このセッションは実行中です。停止してから削除してください。",
@@ -258,6 +283,7 @@ export default {
         copyFailed: "コピーに失敗しました",
         rewindBusy: "セッションは実行中です。停止してから撤回してください。",
         rewindFailed: "撤回に失敗しました：{msg}",
+        rewindFilesDone: "{n} 個のファイルを復元しました。会話は変更されていません。",
       },
       commands: {
         auto: "全自動承認。n ターン制限も可（/auto 3、/auto off）",
@@ -297,6 +323,15 @@ export default {
       topbar: {
         files: "ワークスペースファイル",
       },
+      dock: {
+        hub: "パネル",
+        shell: "Shell",
+        switchTenant: "パネルを切り替え",
+        maximize: "最大化",
+        restore: "元のサイズに戻す",
+        toStacked: "下部に配置",
+        toSideBySide: "右側に配置",
+      },
       notice: {
         policyReverted: "全自動が期限切れになり、standard モードに戻りました（{reason}）",
         retrying: "再試行 {attempt}/{max}、{delay} 待機中：{reason}",
@@ -332,6 +367,10 @@ export default {
         title: "このメッセージを撤回しますか？",
         desc: "このメッセージとそれ以降の会話がすべて撤回され、原文は入力欄に戻ります。",
         bothTitle: "会話を撤回し、ファイルも復元",
+        filesTitle: "ファイルのみ復元し、会話は残す",
+        filesDesc: "思考は役に立ったが編集が誤っていたターンに向いています",
+        pickHint: "行をクリックすると除外できます",
+        pickTitle: "クリックでこのファイルの復元を切り替え",
         bothDesc: "ワークスペースがこのメッセージ送信時の状態に戻ります",
         filesHead: "以下の {n} 個のファイルが影響を受けます",
         binary: "バイナリ",
@@ -350,7 +389,6 @@ export default {
     ko: {
       lang: { label: "언어" },
       flash: {
-        noToken: "URL에 token이 없습니다. pi-go 시작 시 출력된 주소로 열어주세요.",
         loadSessionsFailed: "세션 목록을 불러오지 못했습니다: {msg}",
         createFailed: "새 세션을 만들지 못했습니다: {msg}",
         deleteBusy: "이 세션은 실행 중입니다. 멈춘 후 삭제하세요.",
@@ -371,6 +409,7 @@ export default {
         copyFailed: "복사 실패",
         rewindBusy: "세션이 실행 중입니다. 멈춘 후 되돌리세요.",
         rewindFailed: "되돌리기 실패: {msg}",
+        rewindFilesDone: "{n}개 파일을 복원했습니다. 대화는 그대로입니다.",
       },
       commands: {
         auto: "전자동 승인, n턴 제한 가능(/auto 3, /auto off)",
@@ -410,6 +449,15 @@ export default {
       topbar: {
         files: "작업 공간 파일",
       },
+      dock: {
+        hub: "패널",
+        shell: "Shell",
+        switchTenant: "패널 전환",
+        maximize: "최대화",
+        restore: "원래 크기로",
+        toStacked: "아래쪽에 배치",
+        toSideBySide: "오른쪽에 배치",
+      },
       notice: {
         policyReverted: "전자동이 만료되어 standard 모드로 돌아갔습니다({reason})",
         retrying: "재시도 {attempt}/{max}, {delay} 대기 중: {reason}",
@@ -445,6 +493,10 @@ export default {
         title: "이 메시지를 되돌릴까요?",
         desc: "이 메시지와 이후의 모든 대화가 되돌려지며, 원문은 입력창으로 돌아갑니다.",
         bothTitle: "대화를 되돌리고 파일도 복원",
+        filesTitle: "파일만 복원하고 대화는 유지",
+        filesDesc: "추론은 유용했지만 수정이 잘못된 턴에 적합합니다",
+        pickHint: "행을 클릭하면 제외됩니다",
+        pickTitle: "클릭하여 이 파일의 복원 여부 전환",
         bothDesc: "작업 공간이 이 메시지를 보낸 시점의 상태로 돌아갑니다",
         filesHead: "다음 {n}개 파일이 영향을 받습니다",
         binary: "바이너리",

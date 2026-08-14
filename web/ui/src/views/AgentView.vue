@@ -18,22 +18,38 @@ import {
   Top,
 } from "@element-plus/icons-vue";
 import TurnCard from "@/components/TurnCard.vue";
+import TodoBar from "@/components/TodoBar.vue";
 import ContextMeter from "@/components/ContextMeter.vue";
 import UsageMeter from "@/components/UsageMeter.vue";
 import DockArea from "@/components/DockArea.vue";
 import Unreachable from "@/components/Unreachable.vue";
+import TokenGate from "@/components/TokenGate.vue";
 import ModelPicker from "@/components/ModelPicker.vue";
 import PolicyPicker from "@/components/PolicyPicker.vue";
 import SkillBlock from "@/components/SkillBlock.vue";
 import WorkspacePicker from "@/components/WorkspacePicker.vue";
+import ThemePicker from "@/components/ThemePicker.vue";
 import Logo from "@/components/Logo.vue";
 import { Icon } from "@iconify/vue";
 import { baseName, fileIcon, messageIcon, sessionIcon } from "@/components/fileIcons";
 import { useAgentStream } from "@/agent/useAgentStream";
-import { buildTimeline, formatDuration, parseSkillBlock } from "@/agent/timeline";
-import { invalidateTree } from "@/components/fileTreeStore";
+import { buildTimeline, formatDuration, liveTodos, parseSkillBlock } from "@/agent/timeline";
+import { invalidateIndex, invalidateTree } from "@/components/fileTreeStore";
+import { migrateSheet, PANEL_PREFIX, SHEET_KEY, TENANT_KEY } from "@/components/dockSheets";
+import StarterCards from "@/components/StarterCards.vue";
+import FollowupChips from "@/components/FollowupChips.vue";
+import { planIntent } from "@/agent/composerIntent";
+import { followupHaystack, matchFollowups } from "@/agent/followups";
 import { api, token } from "@/api/client";
-import type { ModelInfo, PanelInfo, PolicyMode, SessionInfo, SkillInfo } from "@/api/types";
+import type {
+  ModelInfo,
+  PanelInfo,
+  PolicyMode,
+  SessionInfo,
+  SkillInfo,
+  StarterCard,
+  Starters,
+} from "@/api/types";
 import { LOCALE_LABELS, SUPPORTED_LOCALES, setLocale } from "@/i18n";
 import type { Locale } from "@/i18n";
 
@@ -104,24 +120,61 @@ async function collapseSidebar() {
   );
 }
 
-// The right dock is a sheet container (files / shell / external panels), one
-// sheet at a time; the active sheet persists. Legacy files/shell booleans
-// migrate into it once.
-const SHEET_KEY = "pi-go:active-sheet";
-const legacySheet = localStorage.getItem("pi-go:files-open") === "1"
-  ? "files"
-  : localStorage.getItem("pi-go:shell-open") === "1"
-    ? "shell"
-    : null;
-const initialSheet = localStorage.getItem(SHEET_KEY) ?? legacySheet;
-const activeSheet = ref<string | null>(initialSheet || null);
-watch(activeSheet, (v) => (v ? localStorage.setItem(SHEET_KEY, v) : localStorage.removeItem(SHEET_KEY)));
+// The right dock has two sheets — workspace files, and the hub that holds the
+// shell and every -web-panel. Which sheet is open and which tenant the hub
+// shows both persist; every id older builds wrote is folded onto this pair by
+// migrateSheet, which is idempotent so downgrades cannot strand anyone.
+const stored = migrateSheet({
+  sheet: localStorage.getItem(SHEET_KEY),
+  legacyFiles: localStorage.getItem("pi-go:files-open") === "1",
+  legacyShell: localStorage.getItem("pi-go:shell-open") === "1",
+});
+const activeSheet = ref<string | null>(stored.sheet);
+// A tenant carried by the old sheet id wins over the remembered one: it is the
+// more specific statement of where the user actually was.
+const hubTenant = ref<string | null>(stored.tenant ?? localStorage.getItem(TENANT_KEY));
+// Deliberately not persisted — see DockArea's maximized comment.
+const hubMaximized = ref(false);
+watch(activeSheet, (v) => {
+  if (v) localStorage.setItem(SHEET_KEY, v);
+  else localStorage.removeItem(SHEET_KEY);
+  // Maximize belongs to the hub; leaving it set would silently apply to
+  // whatever sheet opened next, with no control on screen to undo it.
+  if (v !== "hub") hubMaximized.value = false;
+});
+watch(hubTenant, (v) => (v ? localStorage.setItem(TENANT_KEY, v) : localStorage.removeItem(TENANT_KEY)));
+// Rewrite the migrated values now rather than waiting for the first change, so
+// a session that never touches the dock still leaves the new keys behind.
+if (activeSheet.value) localStorage.setItem(SHEET_KEY, activeSheet.value);
+else localStorage.removeItem(SHEET_KEY);
+if (hubTenant.value) localStorage.setItem(TENANT_KEY, hubTenant.value);
 localStorage.removeItem("pi-go:files-open");
 localStorage.removeItem("pi-go:shell-open");
 
 // External panels registered with -web-panel, fetched once at boot (the set is
 // fixed for the life of the server, like skills).
 const panels = ref<PanelInfo[]>([]);
+
+// A hash route to open the current panel tenant at, set by a starter card that
+// deep-links into it. Not persisted and cleared as soon as the user switches
+// tenant by hand: it describes one navigation, not a preference.
+const hubAt = ref<string | null>(null);
+
+// Empty-state cards contributed by the loaded skills. Absent for a plain pi-go,
+// which then keeps its one-line hint.
+const starters = ref<Starters | null>(null);
+const starterCards = computed(() => starters.value?.cards ?? []);
+
+// Next-step chips, matched against what the last turn actually did. Hidden while
+// a run is in flight or a gate is waiting: a suggestion competing with an
+// approval card is asking the user to do two things at once, and one of them
+// blocks the agent.
+const followupChips = computed(() => {
+  const groups = starters.value?.followups ?? [];
+  if (!groups.length || busy.value || !timeline.value.length) return [];
+  if (stream.live.value.pending_gates.length > 0) return [];
+  return matchFollowups(groups, followupHaystack(timeline.value));
+});
 
 // The panel's dock side: right (the default) or bottom, persisted the same way.
 // The toggle itself lives in the panel's header, Chrome DevTools style.
@@ -139,6 +192,12 @@ const timeline = computed(() => {
   void stream.liveVersion.value;
   return buildTimeline(stream.messages.value, stream.results.value, stream.live.value);
 });
+
+// The plan, for the bar pinned above the composer. Derived from the timeline
+// rather than tracked separately: the todo tool holds no state, so the newest
+// settled write *is* the plan, and liveTodos reads that off the same flag the
+// inline cards use. See TodoBar.vue for why it is pinned at all.
+const todos = computed(() => liveTodos(timeline.value));
 
 const busy = computed(() => stream.busy.value);
 const policy = computed(() => stream.policy.value);
@@ -168,11 +227,16 @@ const ctxHigh = computed(
   () => ctxWindow.value > 0 && stream.contextTokens.value / ctxWindow.value >= 0.85,
 );
 
+// The token gate: without a token every API call is a 401 by design, so boot
+// stops at the gate page instead of flashing errors out of each loader. A 401
+// later in the session (token rotated under us) re-opens it the same way.
+const tokenRejected = ref(false);
+const gated = computed(() => !token || tokenRejected.value);
+
 onMounted(async () => {
-  if (!token) {
-    showFlash(t("agentView.flash.noToken"), "error", true);
-  }
-  await Promise.all([loadSessions(), loadModels(), loadSkills(), loadPanels()]);
+  if (gated.value) return;
+  await Promise.all([loadSessions(), loadModels(), loadSkills(), loadPanels(), loadStarters()]);
+  if (tokenRejected.value) return;
   if (sessions.value.length > 0) open(sessions.value[0].id);
   else await createSession();
 });
@@ -198,6 +262,10 @@ async function loadSessions() {
     sessions.value = res.sessions;
     cwd.value = res.cwd;
   } catch (err) {
+    if ((err as { status?: number }).status === 401) {
+      tokenRejected.value = true;
+      return;
+    }
     showFlash(t("agentView.flash.loadSessionsFailed", { msg: (err as Error).message }), "error");
   }
 }
@@ -222,8 +290,37 @@ async function loadPanels() {
   try {
     panels.value = (await api.panels()).panels;
   } catch {
-    // Non-fatal: the rail just shows no external sheets.
+    // Non-fatal: the hub just has no external tenants.
   }
+}
+
+async function loadStarters() {
+  try {
+    const res = await api.starters();
+    const s = res.starters;
+    starters.value = s && (s.cards?.length || s.followups?.length) ? s : null;
+  } catch {
+    // Non-fatal: the empty state falls back to its built-in hint.
+  }
+}
+
+// A starter card does one of two things, and neither of them is "run something
+// the user did not read". A panel card navigates; a prompt card goes through
+// planIntent, which fills the composer unless the deployment opted into sending.
+function onStarter(c: StarterCard) {
+  if (c.panel) {
+    hubTenant.value = PANEL_PREFIX + c.panel;
+    hubAt.value = c.at ?? null;
+    activeSheet.value = "hub";
+    return;
+  }
+  // The server validated this already; re-checking here keeps the composer's
+  // one entry point authoritative rather than trusting the wire.
+  const plan = planIntent({ text: c.prompt ?? "", send: starters.value?.send });
+  if (plan.kind === "rejected") return;
+  input.value = plan.text;
+  if (plan.kind === "send") void send();
+  else nextTick(() => inputBox.value?.focus());
 }
 
 // The slash-command list, in the order the hint row prints it. Order is
@@ -308,6 +405,10 @@ async function createSession(workspace = "") {
     await loadSessions();
     open(res.session_id);
   } catch (err) {
+    if ((err as { status?: number }).status === 401) {
+      tokenRejected.value = true;
+      return;
+    }
     showFlash(t("agentView.flash.createFailed", { msg: (err as Error).message }), "error");
   }
 }
@@ -613,6 +714,20 @@ watch(
   },
 );
 
+// A dock panel asked the conversation something. Unlike a starter card this
+// always fills and never sends, whatever the deployment configured: a panel is
+// content the server hands out without the token because it is content, and
+// content that could spend a model call on its own would stop being that.
+//
+// Un-maximizing is not a nicety — a maximized hub covers the conversation, so
+// filling a composer the user cannot see would look like nothing happened.
+function onPanelIntent(text: string) {
+  const plan = planIntent({ text });
+  if (plan.kind === "rejected") return;
+  hubMaximized.value = false;
+  suggest(plan.text);
+}
+
 function suggest(text: string) {
   input.value = text;
   inputBox.value?.focus();
@@ -799,7 +914,11 @@ const rewindPreview = ref<{
   available: boolean;
   changes: { path: string; status: string; added: number; removed: number }[];
 } | null>(null);
-const rewindMode = ref<"both" | "chat">("both");
+const rewindMode = ref<"both" | "files" | "chat">("both");
+// Paths the user unticked, so they stay out of the restore. Tracking exclusions
+// rather than inclusions means a preview that lands late (or refreshes) has every
+// new file already selected, which is the safer default for a restore.
+const rewindExcluded = ref(new Set<string>());
 const rewindBusy = ref(false);
 
 const rewindOpen = computed({
@@ -813,10 +932,24 @@ const rewindOpen = computed({
 // change something. An empty diff offers conversation-only, like Claude Code.
 const rewindChanges = computed(() => (rewindPreview.value?.available ? rewindPreview.value.changes : []));
 
+// The paths a restore will actually touch. Empty array means "all of them", which
+// is what the API's absent `paths` means too, so the two agree by construction.
+const rewindSelected = computed(() =>
+  rewindChanges.value.map((c) => c.path).filter((p) => !rewindExcluded.value.has(p)),
+);
+
+function rewindToggle(path: string) {
+  const next = new Set(rewindExcluded.value);
+  if (next.has(path)) next.delete(path);
+  else next.add(path);
+  rewindExcluded.value = next;
+}
+
 function rewindAsk(item: { id: string; text: string }) {
   if (!current.value || busy.value) return;
   rewindMode.value = "both";
   rewindPreview.value = null;
+  rewindExcluded.value = new Set();
   rewindTarget.value = item;
   api
     .rewindPreview(current.value, item.id)
@@ -833,18 +966,31 @@ function rewindAsk(item: { id: string; text: string }) {
 async function confirmRewind() {
   const target = rewindTarget.value;
   if (!target || !current.value) return;
-  const files = rewindMode.value === "both" && rewindChanges.value.length > 0;
+  // With nothing to restore, the two file modes have no work to do; the dialog
+  // does not offer them in that case, but a stale preview must not send one.
+  const wantsFiles = rewindMode.value !== "chat" && rewindChanges.value.length > 0;
+  const mode = wantsFiles ? rewindMode.value : "chat";
   rewindBusy.value = true;
   try {
-    await api.rewind(current.value, target.id, files);
+    await api.rewind(current.value, target.id, mode, wantsFiles ? rewindSelected.value : undefined);
     rewindTarget.value = null;
+    if (mode === "files") {
+      // The transcript did not move, so there is no branch to reload and no
+      // withdrawn text to put back in the composer — reconnecting the stream
+      // here would be asking for a snapshot identical to the one on screen.
+      // Only the files changed, so only the file surfaces are invalidated.
+      invalidateTree();
+      invalidateIndex();
+      showFlash(t("agentView.flash.rewindFilesDone", { n: rewindSelected.value.length }), "info");
+      return;
+    }
     // open() early-returns on an unchanged sid, so the reload goes straight
     // through the stream: the snapshot that lands is the rewound branch.
     stream.connect(current.value);
     // The sidebar's count and title follow the live branch; the file tree
     // follows the restored workspace.
     await loadSessions();
-    if (files) invalidateTree();
+    if (wantsFiles) invalidateTree();
     editAsk(target.text);
   } catch (err) {
     const e = err as Error & { status?: number };
@@ -945,7 +1091,11 @@ function rewindStatusLabel(status: string) {
             </el-dropdown>
           </li>
         </ul>
+        <!-- Preferences about the window, kept together: which skin and which
+             language. Neither is a fact about the session, so neither belongs in
+             the topbar. -->
         <div class="side-foot">
+          <ThemePicker />
           <el-dropdown trigger="click" placement="top-start" @command="(l: Locale) => setLocale(l)">
             <button class="lang-btn" :title="t('agentView.lang.label')">
               <el-icon
@@ -973,6 +1123,7 @@ function rewindStatusLabel(status: string) {
         <button class="rail-icon" :title="t('agentView.sidebar.newSession')" @click="pickerOpen = true">
           <el-icon><EditPen /></el-icon>
         </button>
+        <ThemePicker class="rail-theme" icon placement="right-start" />
         <el-dropdown trigger="click" placement="right-start" @command="(l: Locale) => setLocale(l)">
           <button class="rail-icon" :title="t('agentView.lang.label')">
             <el-icon
@@ -1024,9 +1175,21 @@ function rewindStatusLabel(status: string) {
                4px) until the new session's snapshot lands, then fades back —
                a crossfade, not a blank-and-pop. useAgentStream.hold. -->
           <div ref="convInner" class="conv-inner" :class="{ switching: stream.switching.value }">
-            <div v-if="!timeline.length" class="empty">
-              {{ t("agentView.empty.hint") }}
-            </div>
+            <!-- The empty state is where a deployment says what it is for. With
+                 no skill-provided cards this is the original one-line hint, so
+                 a plain pi-go looks exactly as before. -->
+            <template v-if="!timeline.length">
+              <StarterCards
+                v-if="starterCards.length"
+                :heading="starters?.heading"
+                :cards="starterCards"
+                :fallback="t('agentView.empty.hint')"
+                @pick="onStarter"
+              />
+              <div v-else class="empty">
+                {{ t("agentView.empty.hint") }}
+              </div>
+            </template>
             <template v-for="item in timeline" :key="item.id">
               <div v-if="item.kind === 'user'" class="ask">
                 <!-- WeChat/iMessage pattern: the send time sits centred above
@@ -1063,6 +1226,7 @@ function rewindStatusLabel(status: string) {
                 :run-active="busy"
                 :skills="skills"
                 :cwd="cwd"
+                :todo-pinned="!!todos"
                 @suggest="suggest"
                 @decide="decide"
                 @freeze="(id: string) => api.freezeGate(current!, id)"
@@ -1076,6 +1240,10 @@ function rewindStatusLabel(status: string) {
               <span class="pend-dots"><i /><i /><i /></span>
               {{ t("agentView.waiting") }}
             </div>
+            <!-- Next-step chips, after the answer they follow from. Only when a
+                 skill's condition matches what the last turn did; see
+                 agent/followups.ts for why silence is the default. -->
+            <FollowupChips v-if="followupChips.length" :chips="followupChips" @pick="onStarter" />
           </div>
         </div>
 
@@ -1129,6 +1297,12 @@ function rewindStatusLabel(status: string) {
         {{ t("agentView.ctxWarn.text", { pct: ctxPct }) }}
         <button @click="pickerOpen = true">{{ t("agentView.ctxWarn.newSession") }}</button>
       </div>
+
+      <!-- Directly above the input, below the context warning: the warning is a
+           decision about whether to send at all, so it stays closest to the
+           button. Outside the scroller by construction — .compose-col is a
+           sibling of .conv-wrap — which is why nothing here is sticky. -->
+      <TodoBar v-if="todos" :todos="todos" :busy="busy" />
 
       <div class="input-card">
           <textarea
@@ -1199,11 +1373,17 @@ function rewindStatusLabel(status: string) {
     <DockArea
       v-model:layout="panelLayout"
       :active="activeSheet"
+      :tenant="hubTenant"
+      :at="hubAt"
+      :maximized="hubMaximized"
       :panels="panels"
       :items="timeline"
       :workspace="currentWorkspace"
       :session-id="current"
       @update:active="activeSheet = $event"
+      @update:tenant="hubTenant = $event; hubAt = null"
+      @update:maximized="hubMaximized = $event"
+      @intent="onPanelIntent"
     />
 
     <WorkspacePicker v-if="pickerOpen" :cwd="cwd" @create="onCreateWorkspace" @close="pickerOpen = false" />
@@ -1282,10 +1462,26 @@ function rewindStatusLabel(status: string) {
             </span>
           </button>
 
-          <div v-if="rewindMode === 'both'" class="rw-files">
-            <div class="rw-files-head">{{ t("agentView.rewind.filesHead", { n: rewindChanges.length }) }}</div>
+          <div v-if="rewindMode !== 'chat'" class="rw-files">
+            <div class="rw-files-head">
+              {{ t("agentView.rewind.filesHead", { n: rewindSelected.length }) }}
+              <span class="rw-hint">{{ t("agentView.rewind.pickHint") }}</span>
+            </div>
             <div class="rw-files-list">
-              <div v-for="c in rewindChanges.slice(0, 30)" :key="c.path" class="rw-file">
+              <!-- Each row is a toggle, so a restore can be narrowed to one file
+                   without leaving this dialog. Exclusions are tracked, not
+                   inclusions: everything the preview lists starts selected, which
+                   is the answer that matches the button's label. -->
+              <button
+                v-for="c in rewindChanges.slice(0, 30)"
+                :key="c.path"
+                type="button"
+                class="rw-file"
+                :class="{ off: rewindExcluded.has(c.path) }"
+                :title="t('agentView.rewind.pickTitle')"
+                @click="rewindToggle(c.path)"
+              >
+                <span class="pick" :class="{ on: !rewindExcluded.has(c.path) }" aria-hidden="true" />
                 <Icon class="ficon" :icon="fileIcon(baseName(c.path))" />
                 <span class="st" :data-s="c.status">{{ rewindStatusLabel(c.status) }}</span>
                 <span class="p" :title="c.path">{{ c.path }}</span>
@@ -1296,13 +1492,24 @@ function rewindStatusLabel(status: string) {
                   </template>
                   <span v-else class="bin">{{ t("agentView.rewind.binary") }}</span>
                 </span>
-              </div>
+              </button>
               <div v-if="rewindChanges.length > 30" class="rw-more">
                 {{ t("agentView.rewind.moreFiles", { n: rewindChanges.length - 30 }) }}
               </div>
             </div>
             <p class="rw-warn">{{ t("agentView.rewind.warn") }}</p>
           </div>
+
+          <!-- The third mode. Not a weaker "both": the case it serves is a turn
+               whose reasoning was worth keeping and whose edit was not. Claude
+               Code's rewind menu and Roo's restore dialog both offer it. -->
+          <button class="rw-opt" :class="{ on: rewindMode === 'files' }" @click="rewindMode = 'files'">
+            <span class="rw-radio" />
+            <span class="rw-opttext">
+              <span class="rw-title">{{ t("agentView.rewind.filesTitle") }}</span>
+              <span class="rw-desc">{{ t("agentView.rewind.filesDesc") }}</span>
+            </span>
+          </button>
 
           <button class="rw-opt" :class="{ on: rewindMode === 'chat' }" @click="rewindMode = 'chat'">
             <span class="rw-radio" />
@@ -1328,6 +1535,10 @@ function rewindStatusLabel(status: string) {
          to the browser-style cannot-connect screen; the background backoff
          loop still closes it by itself the moment a reconnect lands. -->
     <Unreachable v-if="stream.unreachable.value" :outage="stream.outage.value" @retry="stream.retryNow()" />
+
+    <!-- No usable token: the API answers 401 by design, so the page gives way
+         to the token gate until one is entered (see client.ts setToken). -->
+    <TokenGate v-if="gated" :rejected="tokenRejected" />
   </div>
 </template>
 
@@ -1336,6 +1547,7 @@ function rewindStatusLabel(status: string) {
   display: flex;
   height: 100vh;
   overflow: hidden;
+  background: var(--el-bg-color-page);
 
   /* Bottom dock: switch to a two-column grid — the sidebar spans both rows,
      main and the panel stack in the second column. Row tracks keep the
@@ -1365,7 +1577,10 @@ function rewindStatusLabel(status: string) {
      ghost off. In the steady collapsed state the full layer is opacity: 0 +
      pointer-events: none, so nothing leaks visually or interactively. */
   position: relative;
-  background: var(--el-fill-color-lighter);
+  /* Paper, one step below the conversation's white. That surface step is what
+     separates chrome from content here; the border beside it only has to be
+     strong enough to hold the edge while the sidebar is sliding. */
+  background: var(--el-bg-color-page);
   /* No width transition here, on purpose: width/flex-basis are layout
      properties, so animating them re-lays out the whole page every frame —
      and the unvirtualized conversation re-wraps with it while the rail's
@@ -1442,61 +1657,93 @@ function rewindStatusLabel(status: string) {
   }
 }
 
+/* Two controls on one row, the skin first: it is the one people go looking for,
+   and the language is set once. Both shrink rather than wrap — the sidebar is
+   250px and a wrapped preferences block reads as a second section. */
 .side-foot {
-  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
   border-top: 1px solid var(--el-border-color-lighter);
+  min-width: 0;
+
+  > * {
+    min-width: 0;
+  }
 }
 
 .lang-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  width: 100%;
+  max-width: 100%;
   padding: 6px 8px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 7px;
   background: transparent;
   color: var(--el-text-color-regular);
   font-size: 12px;
   cursor: pointer;
   transition: background 0.15s;
+  overflow: hidden;
 
   .el-icon {
     font-size: 14px;
+    flex: 0 0 auto;
+  }
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   &:hover {
-    background: var(--el-fill-color);
+    background: var(--el-fill-color-light);
   }
 }
 
 .brand {
   display: flex;
   align-items: center;
-  padding: 12px;
+  padding: 14px 12px 10px;
   gap: 8px;
 
   strong {
     font-size: 15px;
-    font-weight: 700;
-    letter-spacing: 0.2px;
+    font-weight: 650;
+    letter-spacing: -0.1px;
   }
 }
 
 .new {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   margin-left: auto;
-  border: 1px solid var(--el-border-color);
+  border: 1px solid var(--el-border-color-light);
   background: var(--el-bg-color);
-  border-radius: 4px;
+  border-radius: 999px;
   font-size: 11px;
-  padding: 3px 8px;
+  font-weight: 500;
+  padding: 4px 10px;
+  color: var(--el-text-color-regular);
   cursor: pointer;
+  box-shadow: var(--el-box-shadow-lighter);
+  transition:
+    border-color var(--pg-transition),
+    color var(--pg-transition),
+    background var(--pg-transition);
 
   .el-icon {
     font-size: 12px;
+  }
+
+  &:hover {
+    border-color: var(--pg-accent-line);
+    background: var(--pg-accent-wash);
+    color: var(--el-color-primary-dark-2);
   }
 }
 
@@ -1526,43 +1773,64 @@ function rewindStatusLabel(status: string) {
 
 /* Lives in the topbar now: left-aligned and bold, ellipsis when the path
    outruns the bar, full path in the tooltip. */
+/* Lives in the topbar: a quiet monospace pill, ellipsis when the path outruns the
+   bar, full path in the tooltip. The tile is what keeps it from reading as a
+   heading — it is a fact about the process, not a title. */
 .cwd {
   min-width: 0;
   max-width: 60%;
-  font: 600 11px ui-monospace, monospace;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--el-fill-color-lighter);
+  font: 500 11px var(--pg-mono);
   color: var(--el-text-color-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* Rows are pills inset from the sidebar's edge, rather than full-bleed bands with
+   an accent stripe on the active one. Two reasons: a stripe against the panel
+   border draws a second vertical line 2px from the first, and a full-bleed
+   highlight makes the active session look like a section header rather than a
+   selected item. */
 .sessions {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 2px 8px 8px;
   overflow-y: auto;
   flex: 1;
 
   li {
     position: relative;
-    padding: 8px 12px;
+    padding: 7px 10px;
+    margin-bottom: 1px;
+    border-radius: 9px;
     cursor: pointer;
-    border-left: 2px solid transparent;
+    transition: background var(--pg-transition);
 
     &:hover {
-      background: var(--el-fill-color);
+      background: var(--el-fill-color-light);
     }
 
     &.active {
-      background: var(--el-fill-color);
-      border-left-color: var(--el-color-primary);
+      background: var(--el-bg-color);
+      box-shadow:
+        var(--el-box-shadow-lighter),
+        inset 0 0 0 1px var(--el-border-color-lighter);
+
+      .title {
+        color: var(--el-text-color-primary);
+        font-weight: 600;
+      }
     }
   }
 }
 
 .title {
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--el-text-color-regular);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1571,8 +1839,8 @@ function rewindStatusLabel(status: string) {
 .sub {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 2px;
+  gap: 7px;
+  margin-top: 3px;
   font-size: 10px;
   color: var(--el-text-color-secondary);
 }
@@ -1649,35 +1917,46 @@ function rewindStatusLabel(status: string) {
   min-width: 0;
 }
 
+/* The topbar carries one fact, so it is a hairline rather than a bar: taller
+   chrome here would be height taken from the conversation to say something that
+   does not change. */
 .topbar {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--el-border-color-lighter);
+  padding: 9px 20px;
+  border-bottom: 1px solid var(--el-border-color-extra-light);
+  background: var(--el-bg-color);
   font-size: 12px;
 }
 
 .notice {
-  padding: 6px 16px;
+  padding: 7px 20px;
   font-size: 12px;
   color: var(--el-color-warning);
-  background: color-mix(in srgb, var(--el-color-warning) 8%, transparent);
+  background: var(--el-color-warning-light-9);
+  border-bottom: 1px solid color-mix(in srgb, var(--el-color-warning) 18%, transparent);
 
   &.bad {
     color: var(--el-color-danger);
-    background: color-mix(in srgb, var(--el-color-danger) 8%, transparent);
+    background: var(--el-color-danger-light-9);
+    border-bottom-color: color-mix(in srgb, var(--el-color-danger) 18%, transparent);
   }
 }
 
+/* Inside the composer column, so it is inset like the card below it rather than a
+   full-bleed band: it belongs to the decision being made here. */
 .ctx-warn {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 16px;
+  margin: 0 16px 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
   font-size: 12px;
   color: var(--el-color-danger);
-  background: color-mix(in srgb, var(--el-color-danger) 10%, transparent);
+  background: var(--el-color-danger-light-9);
+  border: 1px solid color-mix(in srgb, var(--el-color-danger) 20%, transparent);
 
   button {
     margin-left: auto;
@@ -1685,10 +1964,15 @@ function rewindStatusLabel(status: string) {
     border: 1px solid currentcolor;
     background: transparent;
     color: inherit;
-    border-radius: 4px;
+    border-radius: 999px;
     font-size: 11px;
-    padding: 2px 8px;
+    padding: 3px 10px;
     cursor: pointer;
+    transition: background var(--pg-transition);
+
+    &:hover {
+      background: color-mix(in srgb, var(--el-color-danger) 12%, transparent);
+    }
   }
 }
 
@@ -1697,11 +1981,29 @@ function rewindStatusLabel(status: string) {
   min-height: 0;
   display: flex;
   flex-direction: column;
+  background: var(--el-bg-color);
 }
 
+/* Everything in this column is capped at the same measure as the transcript and
+   centred on it, so the answer and the box you reply in share one left edge. The
+   +32px is the cards' own horizontal margin, which keeps their *content* on the
+   measure rather than their borders. */
 .compose-col {
   display: flex;
   flex-direction: column;
+  align-items: center;
+
+  > * {
+    width: 100%;
+    max-width: calc(var(--pg-measure) + 32px);
+  }
+}
+
+/* The pinned plan is a child component, so its root is what carries the inset —
+   the card below it sets its own margin, and the two have to line up. */
+.compose-col > .todo-bar {
+  margin-left: 16px;
+  margin-right: 16px;
 }
 
 .conv-wrap {
@@ -1715,14 +2017,23 @@ function rewindStatusLabel(status: string) {
 .conversation {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 20px 24px;
+  padding: 20px 28px 28px;
 }
+
+
 
 /* Session-switch crossfade: opacity/transform only — never a layout
    property, so a long conversation cannot re-wrap mid-animation. The same
    class drives both directions: added, the old content sinks out; removed
    (snapshot arrived), the new content rises in. */
 .conv-inner {
+  /* A reading column, not a window-wide one: prose set across 1900px is
+     unreadable — the eye loses the line on the way back — and this transcript is
+     mostly prose. The measure is shared with the composer column, and the
+     scroller around this keeps the full width so the rail stays on the window
+     edge and the scrollbar cannot move as the layout changes. */
+  max-width: var(--pg-measure);
+  margin: 0 auto;
   transition:
     opacity 0.18s ease,
     transform 0.18s ease;
@@ -1860,12 +2171,14 @@ function rewindStatusLabel(status: string) {
 
 .empty {
   color: var(--el-text-color-secondary);
-  font-size: 13px;
-  padding: 24px 0;
+  font-size: 13.5px;
+  line-height: 1.7;
+  padding: 48px 0 24px;
+  text-align: center;
 }
 
 .ask {
-  margin: 18px 0 4px;
+  margin: 24px 0 6px;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -1873,13 +2186,17 @@ function rewindStatusLabel(status: string) {
 
 .ask-bubble {
   max-width: 76%;
-  padding: 10px 16px;
-  /* ChatGPT's user bubble: a quiet light-grey tile, not a coloured one. */
-  background: var(--el-fill-color);
-  color: #000;
-  border-radius: 18px;
+  padding: 11px 16px;
+  /* ChatGPT's user bubble: a quiet tile, not a coloured one. Warm rather than
+     grey, so it sits on the same paper as the rest of the interface — a neutral
+     grey tile on a warm page reads as a screenshot pasted in. */
+  background: var(--el-fill-color-light);
+  border: 1px solid var(--el-border-color-extra-light);
+  color: var(--el-text-color-primary);
+  border-radius: var(--pg-radius-bubble);
+  border-bottom-right-radius: 6px;
   font-size: 14px;
-  line-height: 1.6;
+  line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -1945,11 +2262,17 @@ function rewindStatusLabel(status: string) {
   }
 }
 
+/* A pill rather than a bare line: this is the only thing on screen during the gap
+   before the first token, and a floating grey sentence in the middle of the
+   transcript reads as an answer that failed to render. */
 .waiting {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin: 8px 0;
+  margin: 10px 0;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--el-fill-color-lighter);
   font-size: 12px;
   color: var(--el-text-color-secondary);
 }
@@ -2014,19 +2337,19 @@ function rewindStatusLabel(status: string) {
   background: transparent;
   text-align: left;
   cursor: pointer;
-  padding: 4px 6px;
-  border-radius: 4px;
+  padding: 5px 8px;
+  border-radius: 7px;
 
   &:hover,
   &:focus-visible {
-    background: var(--el-fill-color);
+    background: var(--el-fill-color-light);
   }
 }
 
 .hint-name {
-  font-family: ui-monospace, monospace;
+  font-family: var(--pg-mono);
   font-size: 12px;
-  color: var(--el-color-primary);
+  color: var(--el-color-primary-dark-2);
   flex: 0 0 auto;
 }
 
@@ -2045,17 +2368,22 @@ function rewindStatusLabel(status: string) {
 .input-card {
   display: flex;
   flex-direction: column;
-  margin: 0px 16px 14px;
-  border: 1px solid var(--el-border-color);
-  border-radius: 12px;
-  padding: 8px 10px 6px;
+  margin: 0 16px 16px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: var(--pg-radius-card);
+  padding: 10px 12px 8px;
+  background: var(--el-bg-color);
+  /* Resting elevation: the composer is the one thing on the page that is always
+     interactive, and a flat outline puts it on the same plane as the transcript
+     it sits under. */
+  box-shadow: var(--el-box-shadow-light);
   transition:
     border-color 0.2s,
     box-shadow 0.2s;
 
   &:focus-within {
-    border-color: color-mix(in srgb, var(--el-color-primary) 45%, transparent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--el-color-primary) 10%, transparent);
+    border-color: var(--pg-accent-line);
+    box-shadow: var(--el-box-shadow-light), var(--pg-ring);
   }
 
   textarea {
@@ -2065,8 +2393,13 @@ function rewindStatusLabel(status: string) {
     border: 0;
     background: transparent;
     padding: 2px 0;
-    font: 13px/1.6 inherit;
+    font: 14px/1.65 inherit;
+    color: var(--el-text-color-primary);
     outline: none;
+
+    &::placeholder {
+      color: var(--el-text-color-placeholder);
+    }
   }
 }
 
@@ -2074,7 +2407,7 @@ function rewindStatusLabel(status: string) {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 6px;
 }
 
 /* Transparent in the right dock; only the bottom dock positions it (as the
@@ -2124,6 +2457,16 @@ function rewindStatusLabel(status: string) {
     .input-bar {
       flex-wrap: wrap;
     }
+
+    /* The card's margin is tighter in this column, and the pinned plan has to
+       track it or the two stop sharing a left edge. */
+    > .todo-bar {
+      margin: 10px 12px 0;
+    }
+
+    > .ctx-warn {
+      margin: 10px 12px 0;
+    }
   }
 }
 
@@ -2137,9 +2480,9 @@ function rewindStatusLabel(status: string) {
 .stop {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 30px;
-  padding: 0 14px;
+  gap: 5px;
+  height: 32px;
+  padding: 0 15px;
   border-radius: 6px;
   border: 1px solid var(--el-border-color);
   background: var(--el-bg-color);
@@ -2158,14 +2501,22 @@ function rewindStatusLabel(status: string) {
 
 .stop {
   color: var(--el-color-danger);
+  border-color: color-mix(in srgb, var(--el-color-danger) 28%, var(--el-border-color));
+
+  &:hover {
+    background: var(--el-color-danger-light-9);
+    border-color: color-mix(in srgb, var(--el-color-danger) 45%, transparent);
+  }
 }
 
 .send-btn {
-  /* Pure black, not the primary ramp: the one affirmative action on the page
-     gets the strongest contrast. */
-  color: #fff;
-  background: #000;
-  border-color: #000;
+  /* The skin's solid: on a light skin that is its own ink, because black on paper
+     is the strongest contrast available and the accent is spent on live state
+     rather than on actions. On a dark skin an ink button would be invisible, so
+     the solid is the accent there — see theme/build.ts. */
+  color: var(--pg-on-solid);
+  background: var(--pg-solid);
+  border-color: var(--pg-solid);
 
   .el-icon {
     font-size: 15px;
@@ -2185,8 +2536,8 @@ function rewindStatusLabel(status: string) {
   }
 
   &:hover:not(:disabled) {
-    background: #333;
-    border-color: #333;
+    background: var(--pg-solid-hover);
+    border-color: var(--pg-solid-hover);
   }
 
   &:active:not(:disabled) {
@@ -2386,11 +2737,19 @@ function rewindStatusLabel(status: string) {
 }
 
 .rw-files-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   padding: 6px 10px;
   font-size: 11px;
   color: var(--el-text-color-secondary);
   background: var(--el-fill-color-light);
   border-bottom: 1px solid var(--el-border-color-lighter);
+
+  .rw-hint {
+    margin-left: auto;
+    opacity: 0.75;
+  }
 }
 
 .rw-files-list {
@@ -2399,12 +2758,58 @@ function rewindStatusLabel(status: string) {
   padding: 4px 0;
 }
 
+/* A row is a toggle now, so the button defaults have to go: full width, left
+   aligned, no chrome — it has to keep reading as a list row. */
 .rw-file {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
   display: flex;
   align-items: center;
   gap: 7px;
   padding: 3px 10px;
   font-size: 12px;
+  color: inherit;
+
+  &:hover {
+    background: var(--el-fill-color-light);
+  }
+
+  /* Excluded: still listed, because "which files did I leave out" is a question
+     asked after the fact, and a row that vanished could not answer it. */
+  &.off {
+    opacity: 0.45;
+
+    .p {
+      text-decoration: line-through;
+    }
+  }
+
+  .pick {
+    flex: 0 0 auto;
+    width: 12px;
+    height: 12px;
+    border: 1px solid var(--el-border-color);
+    border-radius: 3px;
+    background: var(--el-bg-color);
+
+    &.on {
+      border-color: var(--el-color-danger);
+      background: var(--el-color-danger);
+      /* The tick, drawn rather than glyphed so it cannot pick up a font that
+         does not have it. */
+      background-image: linear-gradient(
+          to bottom right,
+          transparent 44%,
+          var(--el-bg-color) 44%,
+          var(--el-bg-color) 56%,
+          transparent 56%
+        ),
+        linear-gradient(to bottom left, transparent 62%, var(--el-bg-color) 62%, var(--el-bg-color) 74%, transparent 74%);
+    }
+  }
 
   .ficon {
     flex: 0 0 auto;

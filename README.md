@@ -151,12 +151,14 @@ echo "解释 Go 的 defer 执行时机" | pi-go
 | `-project-memory` | 同时使用 `./.pi-go/memory`，默认关闭 |
 | `-worktrees` | 列出本仓库的隔离 worktree 并退出 |
 | `-worktrees-prune` | 清理没有未保存改动、也没有活进程占用的隔离 worktree 并退出 |
+| `-checkpoints-prune` | 清理本工作区超出保留策略的撤回点并退出 |
+| `-no-git-context` | 不把工作区的 git 分支与未提交数量写进系统提示 |
 | `-web` | 启动浏览器界面（见下节） |
 | `-listen <addr>` | `-web` 的监听地址，默认 `127.0.0.1:7777` |
 | `-gate-timeout <dur>` | 工具调用等待人工审批的时长，默认 5m，超时按拒绝处理 |
 | `-context-edit <auto\|off\|n>` | prompt 超过这个大小就丢弃旧的工具输出，默认 `auto`（模型窗口的五分之四）。见「上下文清理」 |
 | `-web-dev <url>` | 把非 API 路由反代到 vite 开发服务器 |
-| `-web-panel <名称=url>` | 把一个外部 web 应用挂进 dock 作为 sheet 显示，可重复；应用被反代到 `/panels/<名称>/`，与页面同源（见「浏览器界面」） |
+| `-web-panel <名称=url>` | 把一个外部 web 应用挂进 dock 的面板容器，可重复；应用被反代到 `/panels/<名称>/`，与页面同源（见「浏览器界面」） |
 
 ## 给程序读的输出：`-mode json`
 
@@ -232,13 +234,38 @@ pi-go -mode json -p "..." | jq -r 'select(.type=="run_end") | .end_reason'
 | 交回 | 一段答案 | 一段答案 + 一个 commit |
 | 需要 git 仓库 | 否 | 是 |
 
+上表描述的是默认的 worktree 隔离。`PIGO_SUBAGENT_ISOLATION=shared` 会把 `edit` 那一列换掉,见下面单独一节——那是一次显式的取舍,不是一个调优项。
+
 **explore 不建 worktree,这是结论不是优化。** 一个没有 bash、没有 write、没有 edit 的会话改不了任何东西——隔离由「工具不在」提供,是结构性的,不靠任何检查。既然没有要保护的,worktree 就只剩代价;而且它有一个真实的代价:worktree 从 HEAD 加一份已跟踪文件的 diff 建起来,所以**你刚创建还没提交的文件根本不在里面**。让一个 explore 子去解释某个模块怎么工作,它会对着一份缺了最新部分的代码库回答。跑在你自己的目录里就没这个问题——它读到的和你读到的是同一批文件。
 
 顺带的结果:explore 在非 git 目录里也能用,edit 不能。
 
 **edit 的成果以 commit 形式交回,不落到你的工作区。** 子改完的东西被提交并钉在 `refs/pi-go/sub/<id>`(不在 `refs/heads/` 下,`git branch` 看不到),父拿到的是 SHA 和一句可以直接执行的提示:`git show <ref>` 看,`git cherry-pick <sha>` 应用。要不要合回是一次显式决定——在 `-web` 下 `git cherry-pick` 走 bash,所以那一步照样要过审批。
 
-要注意的是「跑一遍测试然后告我哪里挂了」属于 **edit**,尽管它不打算改任何东西:测试会写构建产物、临时文件和缓存。规则是 **有 bash 就要有 worktree**——一个在你自己目录里持有 bash 的子进程等于没有隔离,不管它别的工具是什么。所以这两个模式之间没有有用的第三档。
+要注意的是「跑一遍测试然后告我哪里挂了」属于 **edit**,尽管它不打算改任何东西:测试会写构建产物、临时文件和缓存。规则是 **有 bash 就要有 worktree**——一个在你自己目录里持有 bash 的子进程等于没有隔离,不管它别的工具是什么。所以在**改代码**这件事上,这两个模式之间没有有用的第三档。
+
+### `PIGO_SUBAGENT_ISOLATION=shared`:一个显式放弃隔离的开关
+
+上面那条规则有一个前提:委派出去的活是在改一个代码库。有一类负载不是,而 worktree 对它错了两次——把四个恶意样本各跑一遍反编译是逼出这个开关的那个例子。它需要 bash,所以只能是 edit 模式;但**检出从 HEAD 起算,拿不到父的未提交输入**,而且**子的产出会被提交成 commit、检出目录随即删掉**,父要的是能直接读的文件,拿到的却是一个 hash。
+
+```bash
+PIGO_SUBAGENT_ISOLATION=shared pi-go -web        # 默认是 worktree
+PIGO_SUBAGENT_CONCURRENCY=3                       # 默认 2,上限见下
+```
+
+置为 `shared` 后,edit 子跑在**父自己的目录**里:看得见未提交文件,写下的东西当场就在,没有 commit 也没有要 apply 的东西。`explore` 完全不变。非 git 目录也能用 edit——它不再需要仓库。
+
+**这是一次显式的放弃,不是一个优化。** 必须写清楚放弃了什么:
+
+- **子之间没有隔离。** `write` / `edit` 仍然按路径串行(`withFileLock`),但 **`bash` 根本不走那把锁**,所以两个子在同一棵树里跑构建仍然可能交织。缓解手段只有一个:派发时给每个子**各自的输出路径**,并写进任务文本。工具描述里会把这句话交给模型。
+- **没有回滚。** 什么都没提交,所以一个删掉父未提交工作的子,就是删掉了。
+- **git 禁令反而更重要。** 这个模式下一条走漏的 `git commit` 会落进用户自己的仓库、自己的分支、混在自己的未提交改动里,而不是落在一个父会先验身份的一次性检出上。禁令是无条件的,只有拒绝理由的措辞换了一份对这个模式为真的。
+
+启动时会往 stderr 打一行提示,只在非默认值时打——因为环境变量是一个决定能待的最不显眼的地方,继承了别人的 compose 文件的人不该靠读它才发现。拼错(`shard`)是**启动失败**而不是静默回落:静默回落会让人确信共享模式开着,然后在产出里找到 commit。
+
+`PIGO_SUBAGENT_CONCURRENCY` 的上限由审批预算的算术决定,不是随便挑的:`运行超时/2 + N×闸门超时 ≤ 运行超时`。默认的 30m / 5m 下 N ≤ 3,给 4 会在启动时被 `web.CheckApprovalBudget` 直接拒掉,并告诉你要把 `-gate-timeout` 压到多少。
+
+**报价**(实测,不是估的):subagent 的描述 + schema 每轮重发一次,worktree 下 **2017 B(~504 tok)**,shared 下 **2175 B(~543 tok)**,差 **+158 B / ~+39 tok**。这笔钱只有开了 shared 的部署付;默认路径逐字未变。`ExploreOnly` 生效时反而降到 **1875 B**——它砍掉的 edit 段比换上的那句长。
 
 **子的工具集和父不一样,这个不对称就是安全属性:**
 
@@ -415,7 +442,38 @@ cd ../.. && go build -o pi-go .
 
 开发时用 `pi-go -web -web-dev http://localhost:5173`（另一个终端 `cd web/ui && npm run dev`）：浏览器只跟 Go 服务器打交道，非 API 路由被反代给 vite，所以单一 origin、token 照常工作，HMR 也能用。
 
-**外部面板：`-web-panel 名称=url`（可重复）。** 右侧 dock 是一个 sheet 容器——文件、Shell、每个注册的外部面板各占一个 sheet，由常显的图标栏切换。外部应用经 `/panels/<名称>/` 反代接入（与页面同源，不开 CORS），恶意代码分析平台这类场景应用不用改 pi-go 就能挂进来。只注册你信任的后端：面板与页面同源，和 `-skill` 一样是运营者的显式决定。
+**外部面板：`-web-panel 名称=url`（可重复）。** 外部应用经 `/panels/<名称>/` 反代接入（与页面同源，不开 CORS），恶意代码分析平台这类场景应用不用改 pi-go 就能挂进来。只注册你信任的后端：面板与页面同源，和 `-skill` 一样是运营者的显式决定。
+
+右侧 dock 的图标栏**固定两颗**：**文件**（工作区）和**面板**。后者是一个容器，Shell 和每个注册的 `-web-panel` 都是它的住户，由标题栏左侧的下拉切换——注册再多面板也不会让图标栏变长。标题栏还有最大化（临时占满宽度，不持久化）和右侧/底部布局切换。
+
+面板可以把一句话递给对话区（比如详情页上的「问 agent 这个样本」），用的是 MCP Apps 的 `ui/message`（JSON-RPC over postMessage）：
+
+```js
+window.parent.postMessage({
+  jsonrpc: "2.0", method: "ui/message",
+  params: { role: "user", content: { type: "text", text: "分析这个样本" } },
+}, window.location.origin)
+```
+
+pi-go 会校验来源 origin 与发送方 iframe，然后把文本**填进输入框**——面板永远不会代你发送。
+
+**空态引导：skill 目录下的 `starters.json`（可选）。** 空对话上的引导卡片和每轮结束后的下一步 chips 都由它提供，pi-go 只负责渲染与校验，不含任何领域内容；没有这个文件时空态保持原来那行提示。改完刷新页面即生效（每请求重读）。
+
+```json
+{
+  "heading": "今天要做什么？",
+  "send": false,
+  "cards": [
+    { "icon": "search", "title": "找一个样本", "label": "零检出", "prompt": "…" },
+    { "icon": "graph", "title": "看聚簇图", "panel": "样本库", "at": "#/clusters" }
+  ],
+  "followups": [
+    { "when": ["mal-decompile"], "chips": [{ "title": "生成 Yara 规则", "prompt": "…" }] }
+  ]
+}
+```
+
+一张卡片只能有一个动作：`prompt`（填进输入框）或 `panel`（打开面板，可带 `at` hash 路由）。`send: true` 让 `prompt` 卡片点击即发送，默认是填入。`followups` 的 `when` 匹配**最后一轮**的工具调用与回复，没命中就不显示。`icon` 取自固定白名单（`search` `code` `shield` `graph` `file` `terminal` `spark` `book`）。不合法的卡片会在 stderr 上说明原因并跳过。
 
 三件事值得知道：
 
@@ -498,8 +556,38 @@ journal 在第一次 `edit`/`write` 那个文件时记一份前像,之后重复�
 - checkpoint 用**run 开始那一刻 transcript 的 head 记录 id** 命名(`refs/checkpoints/<recordID>`)。而撤回的分叉点恰好就是这样一个记录 id——**这就是两棵树的连接键**:对话在 JSONL 里分叉,影子分支在这里分叉。
 - **checkpoint 的失败模式永远是「不可用」,绝不是「阻塞」。** 没有 git、目录不可写,run 照跑,只是那个点没有文件可恢复,撤回退化成只撤对话——也就是有 checkpoint 之前的行为。
 - **恢复会预览并询问,不猜。** 快照分不清「agent 改的」和「checkpoint 之后你自己改的」,所以对话框先列出会动哪些文件(git 的 name-status:`M` 恢复 / `D` 找回 / `A` 删除)和各自的增删行数,并明说**之后新建的文件会被删除、你手动的改动会被覆盖**。二进制文件报「二进制」而不是编一个行数。
+- **三档,而不是两档。** 「撤回对话并恢复文件」/「**只恢复文件,保留对话**」/「只恢复对话」。中间那一档服务的场景很具体:**这一轮的思路有用、但改动改坏了**——推理值得留在上下文里,产出不值得留在磁盘上。它不是第一档的弱化版,是另一件事。
+- **可以只恢复其中几个文件。** 受影响文件列表里每一行都是一个勾选,默认全选,点一行把它排除(灰掉 + 删除线,不消失——「我漏了哪几个」是事后才问的问题)。所以「只恢复这一个文件」就是取消勾选其余的。**主按钮仍然是唯一会动手的东西**:确认对话框不该在你按下确认之前就产生不可逆副作用。
 - **恢复先跑、分叉后跑,同一把锁**,所以撤回是全有或全无:恢复失败就完全不动对话,而且中间没有缝隙能让一次 run 挤进来。
 - `reset --hard` 不管未跟踪文件,但被放弃的那次 run 新建的文件正是未跟踪的——所以后面跟一个 `clean -fd`。**被 ignore 的路径留着**,那正是 ignore 它们而不是删掉的意义。
+
+#### 快照要有预算,撤回点要有保留期
+
+每次 run 开始都打一次快照、而且一直留着,所以这两件事都是无界的:一次快照可以有多大、总共留多少个。
+
+- **体积预算**:超过 512MiB 新增内容(或 2 万个新文件)的工作树**不打快照**,run 照跑,stderr 上说明是哪几个目录最大。判断交给 `git ls-files --others --exclude-standard` 而不是自己走目录树,因为只有 git 知道 `add -A` 到底会 stage 什么——你的 `.gitignore`、每一层嵌套的 `.gitignore`、还有影子仓自己的 `info/exclude`。自己走一遍的版本会因为一个 2GB 的构建目录关掉 checkpoint,而那个目录 git 本来就要 ignore。**这是拒绝,不是故障**:下一次 run 会重新判断,所以补一条 `.gitignore` 就好了,不用重启。
+- **噪声清单**是 quick open 那份(`indexSkip`)的超集:多出来的是包管理器目录和工具缓存(`.venv`/`__pycache__`/`.gradle`/`.terraform` 等)。**`build/` 和 `target/` 故意不在里面**——它们在有些项目里是手写源码,而猜错的代价是静默的:一次撤回跳过了一个没人被告知的文件。名字只在「这个名字永远不是源码」时才配进清单,剩下的交给上面那条体积预算。
+- **保留策略**:100 个撤回点或 30 天,先到先算,`-checkpoints-prune` 执行。做成命令而不是后台定时清扫,和 `-worktrees-prune` 同一个理由:pi-go 没有常驻进程,定时清扫意味着在一次无关的 run 里删掉别人的撤回点。在这之前答案是「永不清理」——影子仓会随着工作区被使用一直长。
+- **清理必须重写幸存的撤回点**,否则一个字节都不会释放:每个 checkpoint 提交都以前一个为父,分支把整条链拴在一起,删掉旧 ref 之后新提交仍然把它列为祖先。所以 prune 会在同样的 tree 上重建一条新链——**ref 名不变,commit id 变**——然后 `gc` 才真的能丢掉只有被删除的点引用过的对象。改 id 是安全的,因为和 transcript 的连接键是 ref **名**:预览和恢复每次都重新解析这个名字。
+- **排序不能用提交时间**。git 时间戳只有秒精度,几次快速的 run 会带着同一个时间,`--sort=-committerdate` 于是静默退化成按 ref 名排序——保留 `rec0`、`rec1` 而丢掉 `rec4`、`rec5`,正好是保留策略的反面。真正的顺序是提交链本身,所以用 `rev-list --all --topo-order` 拿一次全序。
+
+#### 你自己的 git：状态显示与提示注入
+
+影子仓管的是「撤回最近几轮」,它有意不碰你的历史。**这里管的是另一半:这是哪个分支、有没有提交过、这里到底有没有版本控制。**
+
+文件面板 header 下面多一行:分支 · `↑ahead ↓behind` · 未提交数量。tooltip 里是仓库根、head 提交和分项明细。**「未纳入 git 版本控制」是唯一上色的状态**,因为它是唯一一个你可能不知道自己身处其中的状态。
+
+- **报数量,绝不报内容。** 文件列表是无界的——同一个功能在 Claude Code 那边就因此变成每轮上万 token(anthropics/claude-code#8245)。副产品是 prompt section 的大小由构造保证有界,所以既没有 token 预算要调,也没有哪个仓库能把它撑大。
+- **绝不猜主干分支**(anthropics/claude-code#16767 是猜错的样子)。上游与 ahead/behind 由 `git status --porcelain=v2 --branch` 免费给出,是同一个问题更准的答案。
+- **仓库根会显示出来**,因为它不总是工作区:会话起在高了一层的目录上会静默报告父仓库的状态,而看见根路径是你唯一能发现的途径。
+- **端点永远 200**:没有仓库、没有 git、探测超时,都是要显示的状态而不是错误。和 checkpoint 同一条规则。
+- **`GIT_OPTIONAL_LOCKS=0` 不是优化**:`git status` 正常会占用索引锁,而这段代码跑的时候你可能正在同一个 checkout 里敲 git。一个会让你自己的提交失败的状态显示,比没有更糟。
+- **不主动 `git init`。** 非仓库时提示词里写明「说一次就够,不要在没被要求的情况下初始化仓库」。Codex 桌面端是提示你创建,它的 CLI 则是不在仓库里就拒绝启动——后者不抄:pi-go 的影子仓让非 git 目录照样能撤回,拦下来是自降能力。
+- `-no-git-context` 关掉**注入**,但不关**显示**:一个为了省 token 关掉注入的人,并没有要求从此看不见自己的分支。注入按会话探测一次(系统提示中途变化会让缓存前缀每轮失效),不是每轮。
+- **会话开始时已经脏的路径会被点名告诉模型**(上限 20 条 + 「另有 N 个」),附一句「这些不是你的,提交时不要暂存」。这是「报数量不报内容」的唯一例外,因为这条规则用数字表达不出来。它盖的是闸门盖不住的那个洞:`git add -A` 会把**你自己还没提交的工作**扫进 agent 的提交,而闸门给你看的是命令、不是它将要暂存的清单。按定义 agent 之后做的任何事都不可能加入这个集合,所以只在开始时探测一次。
+- **pi-go 不写你的仓库。** 提交由模型经 bash 发起,默认档 `standard` 只审 bash,所以**每一次 agent 提交你本来就已经在批准了**——再加一个提交端点只是换个入口、多一条写路径。
+- **不加 `Co-Authored-By` 之类的归属,这是决定不是遗漏。** 它在上游仍有争议(Claude Code 有两个仍开着的 issue 说这件事无法关闭、且永久改了用户历史),而且做错了清不掉(GitHub 的 contributor 图统计 co-author 且是缓存的,改写历史后 AI 仍然挂着);Linux 内核干脆禁止 AI 生成的提交信息。要归属的项目用 `commit.template` 或 hook 自己加——那是仓库的决定,不该由基座代做。
+- 基座提示词里多了一句通用纪律:**暂存你改过的路径而不是全部,不要用 `--no-verify` 绕过 hook,不要 amend / reset / force-push。** 它不依赖 git 事实,所以 `-no-git-context` 关掉之后依然生效。
 
 ### 会话侧栏:重命名与置顶
 
@@ -662,15 +750,50 @@ switched to glm-5.2 (zhipu), 2 messages carried over
 
 | 工具 | 参数 | 说明 |
 |---|---|---|
-| `read` | `path`, `offset?`, `limit?` | 读文件，超过 2000 行或 50KB 截断并提示用 `offset` 续读 |
+| `read` | `path` \| `paths[]`, `offset?`, `limit?` | 读文件，超过 2000 行或 50KB 截断并提示用 `offset` 续读。`paths` 一次读多个文件（额度均分，见下） |
 | `ls` | `path?`, `limit?` | 列一层目录，目录带 `/`，含点文件，500 条或 50KB 截断 |
 | `find` | `pattern`, `path?`, `limit?` | 按 glob 找文件。含 `/` 时匹配相对路径，否则匹配文件名。默认 200 条 |
 | `grep` | `pattern`, `path?`, `include?`, `limit?` | Go 正则搜内容，输出 `path:line:text`。`(?i)` 开头即不分大小写。跳过二进制和 8MB 以上的文件，默认 100 条匹配 |
 | `write` | `path`, `content` | 写文件，自动建父目录 |
 | `edit` | `path`, `edits[{oldText,newText}]` | 精确字符串替换，`oldText` 必须唯一匹配 |
-| `bash` | `command`, `timeout?` | 执行命令，默认 120 秒超时，输出保留末尾 2000 行 / 50KB。**输出边跑边显示**，见下 |
+| `bash` | `command`, `workdir?`, `timeout?` | 执行命令，默认 120 秒超时，输出保留末尾 2000 行 / 50KB。**输出边跑边显示**，见下。`workdir` 换执行目录，见下 |
 
 **参数会先按 schema 校验再执行**，而且在审批闸门之前 —— 一个缺字段的调用无论怎么批准都跑不起来。错误里会点名缺哪个字段、列出这个工具接受的全部字段，拼错时还会给线索（`file_path` → 「你是不是想写 path」）。未知字段一律容忍：模型常加些无害的额外键，为此废掉一轮不值得。
+
+### `bash` 的 `workdir`：比 `cd x && ...` 好的那个答案
+
+每次调用都是一个新的 `bash -c`，`cd` 和环境变量都不跨调用。这一点两家大厂给了两个不同的答案，pi-go 跟的是后一个：
+
+- **Anthropic 的 Claude Code 让 cwd 持久**。主会话里 `cd` 之后，后续 Bash 命令还在那个目录，只要没跑出项目目录或 `--add-dir` 加的目录；跑出去就重置回项目目录，并在结果里追加一行 `Shell cwd was reset to <dir>`。子代理会话从不继承目录变更。可以用 `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1` 关掉这个继承。环境变量仍然不持久。（[Claude Code 工具参考](https://code.claude.com/docs/en/tools-reference)，内容已转述以符合许可要求）
+- **OpenAI 的 Codex 不持久，而是给 `workdir` 参数**，和 `command`、`timeout_ms` 并列。它甚至是 `required` 的——那是 strict schema 要求「每个 property 都得进 required」的后果，不是「每次调用都该显式给目录」的判断。（[Codex issue #524](https://github.com/openai/codex/issues/524) 里那条 schema 报错正好暴露了这个形状）
+
+pi-go 的 bash 本来就是每次新进程，所以 Codex 那个答案是匹配的那个：
+
+```json
+{"command": "make", "workdir": "sub"}
+```
+
+相对路径按工作目录解析，绝对路径直接用。**不设为 required**：那会让每一次调用都带一个多余的 `"."`，而且现存 transcript 会全部不再符合 schema。
+
+三件必须写清的事：
+
+- **它不过路径守卫，这是有意的。** bash 从来没有路径限制（`tools/tool.go` 的注释里写明了），而在 `workdir` 上加一道、命令串里的 `cd /etc` 又照样能跑，那是一道读起来像边界但不是边界的限制，还会拒掉这个参数本来要服务的场景——在隔壁 checkout 里跑一次构建。bash 真正的边界是容器。
+- **但它必须过 subagent 的守卫。** 守卫拦 `cd` 靠的是从命令文本里解析出绝对路径目标，而 `workdir` 到达同一个地方却从不出现在那段文本里。不补这一道检查，加这个参数就等于给子代理开了一个「长得像普通参数」的越界出口。`Guard.CheckDir` 就是这道检查，测试直接跑工具而不是调守卫。
+- **它参与「总是允许这条命令」的键。** 在有 `workdir` 之前，「总是允许 `go build ./...`」只可能意味着「在会话目录里」，因为没有别的地方可跑。继续只按命令串做键，就会把当初那一次点击悄悄提升成「在 agent 说出的任何目录里」——一次用户没被展示、也不可能有意做出的放宽。所以键是 `命令 + workdir`；给裸命令做的授权不覆盖带 `workdir` 的调用，反之亦然。
+
+目录不存在或指向一个文件，都由工具本身报错，不让 bash 起不来。差别对模型是实的：`chdir: no such file or directory` 加 exit code -1 描述的是这个 harness，而一条点名解析后的绝对路径和解析基准的消息描述的是那个错误。命令实际跑在非默认目录时，`BashDetails.workdir` 会记下解析后的绝对路径，界面上也会显示——只在非默认时显示，因为每次都播报默认值等于什么都没说。
+
+### `read` 的 `paths[]`：一次调用读多个文件
+
+```json
+{"paths": ["a.go", "b.go", "sub/c.go"]}
+```
+
+`path` 和 `paths` 二选一（`offset` / `limit` 只跟 `path` 配对）。**额度均分而不是每个文件一份**：五个文件各拿满上限就是五倍上限，而这个上限的存在意义就是防止一个 tool_result 吃掉上下文窗口。一个路径失败不让整次调用失败——那正好浪费掉这次调用本来要省的那趟往返；全部失败才返回 error。
+
+值得记一条：**Anthropic 和 OpenAI 的 read 都是单文件的**，`paths[]` 是 pi-go 自己的扩展。两家在「一次调用做更多事」上的官方答案是 shell 那一侧（Codex 的 `commands[]` 数组 + 逐条 outcome），而那条 pi-go 因为审批闸门否决了（见 `docs/tool-batching-and-parallelism.md` §5.D）。
+
+界面上多文件读现在有自己的卡片：文件列表 + 每个文件的行数 / 截断 / 失败标记，点开看单个文件的内容（带语法高亮和行号）。**内容是按工具记录的字节区间切出来的，不是把拼接文本再解析回去。** 后者有一个不能有的失败模式：一个文件的内容里如果出现 `==> other.go <==` 这样一行，它的分段会提前结束，剩下的被算到下一个文件名下——把一个文件的片段挂在另一个文件的名字下面，比什么都不显示更糟。区间由写文本的同一段代码算出来，所以不可能和格式脱节。
 
 **`bash` 的输出边跑边显示**，所以 `go test` 跑一分钟时能看出是在跑还是卡了：
 
@@ -1389,12 +1512,14 @@ Note: piped input **always triggers one-shot mode** and never enters the REPL. O
 | `-project-memory` | Also use `./.pi-go/memory`; off by default |
 | `-worktrees` | List isolated worktrees of this repo and exit |
 | `-worktrees-prune` | Clean up isolated worktrees with no unsaved changes and no live process holding them; exit |
+| `-checkpoints-prune` | Discard this workspace's rewind points beyond the retention policy; exit |
+| `-no-git-context` | Do not tell the model the workspace's git branch and uncommitted counts |
 | `-web` | Launch the browser UI (see section below) |
 | `-listen <addr>` | Listen address for `-web`; default `127.0.0.1:7777` |
 | `-gate-timeout <dur>` | How long a tool call waits for human approval; default 5m, timeout is treated as denied |
 | `-context-edit <auto\|off\|n>` | Discard older tool output once the prompt exceeds this size; default `auto` (four-fifths of the model window). See "Context cleaning" |
 | `-web-dev <url>` | Reverse-proxy non-API routes to a vite dev server |
-| `-web-panel <name=url>` | Show an external web app as a dock sheet (repeatable); reverse-proxied at `/panels/<name>/`, same origin as the page |
+| `-web-panel <name=url>` | Show an external web app in the dock's panel container (repeatable); reverse-proxied at `/panels/<name>/`, same origin as the page |
 
 ## JSON Output: `-mode json`
 
@@ -1470,13 +1595,38 @@ It solves context pollution: exploring an unfamiliar module, running a test suit
 | Hands back | an answer | an answer + a commit |
 | Requires a git repo | no | yes |
 
+The table describes the default, worktree isolation. `PIGO_SUBAGENT_ISOLATION=shared` replaces the `edit` column; see the section below — that is an explicit trade, not a tuning knob.
+
 **`explore` does not build a worktree — this is a conclusion, not an optimization.** A session with no bash, no write, no edit cannot change anything — isolation is provided by "the tools are absent," structurally, not by any check. With nothing to protect, a worktree would only add cost; and it has a real cost: a worktree is built from HEAD plus a diff of tracked files, so **files you just created and haven't committed are simply not in it**. Have an `explore` sub explain how some module works and it answers against a copy of the codebase missing its newest parts. Running in your own directory has no such problem — it reads the same files you do.
 
 A side effect: `explore` works in non-git directories; `edit` does not.
 
 **`edit`'s result comes back as a commit, not into your working tree.** What the sub changed is committed and pinned at `refs/pi-go/sub/<id>` (not under `refs/heads/`, so `git branch` does not see it); the parent gets a SHA and a line it can run directly: `git show <ref>` to look, `git cherry-pick <sha>` to apply. Whether to merge it back is an explicit decision — under `-web`, `git cherry-pick` goes through bash, so that step still goes through approval.
 
-Worth noting: "run the tests and tell me what failed" counts as **edit**, even though it has no intention of changing anything: tests write build artifacts, temp files, caches. The rule is **bash implies worktree** — a subprocess holding bash in your own directory means no isolation, regardless of its other tools. So there is no useful third gear between these two modes.
+Worth noting: "run the tests and tell me what failed" counts as **edit**, even though it has no intention of changing anything: tests write build artifacts, temp files, caches. The rule is **bash implies worktree** — a subprocess holding bash in your own directory means no isolation, regardless of its other tools. So for **changing code**, there is no useful third gear between these two modes.
+
+### `PIGO_SUBAGENT_ISOLATION=shared`: giving up isolation on purpose
+
+That rule assumes the delegated work is editing a codebase. Some workloads are not, and for those a worktree is wrong twice over — running four malware samples through a decompiler is the case that forced this switch. It needs bash, so it can only be `edit` mode; but **the checkout starts at HEAD, so it does not contain the parent's uncommitted inputs**, and **the child's output is committed and its directory then deleted**, so a parent that wanted files it could read gets a hash instead.
+
+```bash
+PIGO_SUBAGENT_ISOLATION=shared pi-go -web        # default is worktree
+PIGO_SUBAGENT_CONCURRENCY=3                       # default 2; ceiling below
+```
+
+Set to `shared`, an `edit` child runs in **the parent's own directory**: it sees uncommitted files, whatever it writes is simply there, and there is no commit and nothing to apply. `explore` is unchanged. A non-git directory works for `edit` too — it no longer needs a repository.
+
+**This is an explicit surrender, not an optimization.** What is given up has to be stated:
+
+- **No isolation between children.** `write` / `edit` still serialize per path (`withFileLock`), but **`bash` does not go through that lock at all**, so two children running a build in the same tree can still interleave. The only mitigation is to give each child **its own output path** and say so in the task; the tool description passes that instruction to the model.
+- **No undo.** Nothing is committed, so a child that deletes the parent's uncommitted work has deleted it.
+- **The git ban matters more, not less.** In this mode a stray `git commit` lands in the user's own repository, on their branch, mixed into their uncommitted work — rather than in a throwaway checkout the parent verifies first. The ban is unconditional; only the refusal's wording changes to one that is true here.
+
+A notice goes to stderr at startup, and only when the value is not the default — an environment variable is the least visible place a decision can live, and someone who inherited a compose file should not have to read it to find out. A typo (`shard`) is a **startup failure**, not a quiet fallback: a quiet fallback would leave someone convinced the shared mode is on, and then finding commits in the output.
+
+`PIGO_SUBAGENT_CONCURRENCY`'s ceiling comes from the approval-budget arithmetic, not from taste: `run timeout / 2 + N x gate timeout <= run timeout`. Under the default 30m / 5m that is N <= 3; 4 is refused at startup by `web.CheckApprovalBudget`, which tells you how far to lower `-gate-timeout`.
+
+**The price** (measured, not estimated): the subagent's description plus schema is resent every turn — **2017 B (~504 tok)** under worktree, **2175 B (~543 tok)** under shared, a difference of **+158 B / ~+39 tok**. Only a deployment that turns shared on pays it; the default path is unchanged byte for byte. With `ExploreOnly` in effect it actually drops to **1875 B** — the `edit` paragraph it removes is longer than the sentence it puts back.
 
 **The sub's tool set differs from the parent's, and that asymmetry is the security property:**
 
@@ -1649,7 +1799,38 @@ cd ../.. && go build -o pi-go .
 
 For development use `pi-go -web -web-dev http://localhost:5173` (in another terminal `cd web/ui && npm run dev`): the browser only talks to the Go server, non-API routes are reverse-proxied to vite, so single origin, the token still works, and HMR is usable.
 
-**External panels: `-web-panel name=url` (repeatable).** The right dock is a sheet container — files, the shell, and each registered panel are sheets switched by an always-visible icon rail. Panel apps are reverse-proxied at `/panels/<name>/` (same origin as the page, no CORS), so scenario applications plug in without touching pi-go. Register only backends you trust: panels share the page's origin, and like `-skill` the flag is an explicit operator decision.
+**External panels: `-web-panel name=url` (repeatable).** Panel apps are reverse-proxied at `/panels/<name>/` (same origin as the page, no CORS), so scenario applications plug in without touching pi-go. Register only backends you trust: panels share the page's origin, and like `-skill` the flag is an explicit operator decision.
+
+The right dock's rail is **fixed at two buttons**: **files** (the workspace) and **panel**. The latter is a container whose tenants are the shell and every registered `-web-panel`, switched from a dropdown in its header — registering more panels never grows the rail. The header also carries maximize (fills the width temporarily, not persisted) and the right/bottom layout toggle.
+
+A panel can hand a line to the conversation (a "ask the agent about this" button, say) using MCP Apps' `ui/message` (JSON-RPC over postMessage):
+
+```js
+window.parent.postMessage({
+  jsonrpc: "2.0", method: "ui/message",
+  params: { role: "user", content: { type: "text", text: "analyse this sample" } },
+}, window.location.origin)
+```
+
+pi-go validates the origin and the sending iframe, then **fills the composer**. A panel never sends for you.
+
+**Empty-state starters: `starters.json` in a skill directory (optional).** It supplies the cards on an empty conversation and the next-step chips after a turn. pi-go only renders and validates them — no domain content of its own — and without the file the empty state keeps its original one-line hint. Edits take effect on reload (the file is read per request).
+
+```json
+{
+  "heading": "What are we doing today?",
+  "send": false,
+  "cards": [
+    { "icon": "search", "title": "Find a sample", "label": "zero detections", "prompt": "…" },
+    { "icon": "graph", "title": "Open the cluster graph", "panel": "样本库", "at": "#/clusters" }
+  ],
+  "followups": [
+    { "when": ["mal-decompile"], "chips": [{ "title": "Write a Yara rule", "prompt": "…" }] }
+  ]
+}
+```
+
+A card carries exactly one action: `prompt` (fill the composer) or `panel` (open that panel, optionally at an `at` hash route). `send: true` makes a prompt card go out on click; the default is to fill. A follow-up group's `when` is matched against what the **last turn** did — its tool calls and its reply — and no match shows nothing. `icon` comes from a fixed set (`search` `code` `shield` `graph` `file` `terminal` `spark` `book`). Invalid cards are skipped with the reason on stderr.
 
 Three things worth knowing:
 
@@ -1732,8 +1913,38 @@ A few design decisions:
 - The checkpoint is named with **the transcript head record id at the moment the run started** (`refs/checkpoints/<recordID>`). And the forking point of a rewind happens to be exactly such a record id — **this is the join key between the two trees**: the conversation forks in the JSONL, the shadow branch forks here.
 - **The failure mode of a checkpoint is always "unavailable," never "blocking."** No git, directory not writable — the run goes ahead, there is just nothing to restore at that point, and rewind degrades to conversation-only — i.e., the behavior that existed before checkpoints.
 - **Restore previews and asks, it does not guess.** A snapshot cannot tell "what the agent changed" from "what you changed after the checkpoint," so the dialog first lists which files will move (git's name-status: `M` restore / `D` recover / `A` delete) and each one's line delta, and states clearly that **files created afterwards will be deleted and your manual edits will be overwritten**. Binary files report "binary" rather than a made-up line count.
+- **Three modes, not two.** "Rewind the chat and restore files" / "**restore files only, keep the chat**" / "rewind the chat only". The middle one serves a specific case: **the turn's reasoning was useful and its edit was not** — worth keeping in the context, not worth keeping on disk. It is not a weaker first option; it is a different operation.
+- **A restore can be narrowed to some of the files.** Every row in the affected-files list is a toggle, all selected by default; clicking one leaves it out (dimmed and struck through, not removed — "which ones did I leave out" is asked after the fact). So "restore just this one file" is "untick the others". **The main button is still the only thing that acts**: a confirm dialog should not produce irreversible side effects before you confirm.
 - **Restore runs first, fork runs after, under the same lock**, so rewind is all-or-nothing: a failed restore leaves the conversation completely untouched, and there is no gap for a run to slip into in between.
 - `reset --hard` ignores untracked files, but the files created by the abandoned run are exactly untracked — so a `clean -fd` follows. **Ignored paths are left alone**, which is the point of ignoring them rather than deleting them.
+
+#### Snapshots need a budget, rewind points need a retention period
+
+A snapshot is taken at every run start and kept, so both of those are otherwise unbounded: how big one snapshot may be, and how many are kept.
+
+- **Size budget**: a work tree with more than 512MiB of new content (or 20,000 new files) is **not snapshotted**; the run goes ahead and stderr names the largest directories. The decision is delegated to `git ls-files --others --exclude-standard` rather than a hand-rolled walk, because git is the only thing that knows what `add -A` would actually stage: your `.gitignore`, every nested one below it, and the shadow repo's own `info/exclude`. A hand-rolled walk would disable checkpointing over a 2GB build directory git was going to ignore anyway. **This is a refusal, not a failure**: the next run decides again, so adding a `.gitignore` line fixes it without a restart.
+- **The noise list** is a superset of quick open's (`indexSkip`); what it adds is package-manager directories and tool caches (`.venv`, `__pycache__`, `.gradle`, `.terraform`, and so on). **`build/` and `target/` are deliberately absent** — both are hand-written source in some projects, and the cost of guessing wrong is silent: a rewind that skips a file nobody was told about. A name earns a place on that list only when the name is never source; the rest is the size budget's job.
+- **Retention**: 100 rewind points or 30 days, whichever runs out first, applied by `-checkpoints-prune`. A command rather than a background sweep, for the same reason `-worktrees-prune` is one: pi-go has no daemon, so a timed sweep would mean deleting someone's rewind points from inside an unrelated run. Before this the answer was "never" — a workspace's shadow repo grew for as long as the workspace was worked in.
+- **Pruning has to rewrite the survivors** or it frees nothing: every checkpoint commit parents the one before it, so the branch keeps the whole chain reachable and a newer commit still lists a deleted ref's commit as an ancestor. Prune therefore rebuilds a fresh chain over the same trees — **same ref names, new commit ids** — and only then can `gc` drop the objects that only the discarded points referenced. Rewriting ids is safe because the join key with the transcript is the ref **name**: preview and restore resolve it every time.
+- **Ordering cannot come from commit dates.** Git timestamps have one-second resolution, so a handful of quick runs share one date and `--sort=-committerdate` silently falls back to sorting by ref name — keeping `rec0` and `rec1` while discarding `rec4` and `rec5`, the exact opposite of a retention policy. The real order is the commit chain, so a single `rev-list --all --topo-order` provides the total order.
+
+#### Your own git: status display and prompt context
+
+The shadow repo covers "undo the last few turns" and deliberately never touches your history. **This covers the other half: which branch is this, is any of it committed, is there version control here at all.**
+
+One line under the file panel's header: branch · `↑ahead ↓behind` · uncommitted count. The tooltip carries the repository root, the head commit and the breakdown. **"Not under version control" is the only state that gets colour**, because it is the only one you might not know you are in.
+
+- **Counts, never content.** A file list is unbounded — the same feature became a five-figure per-turn token cost in Claude Code for exactly that reason (anthropics/claude-code#8245). The by-product is that the prompt section's size is bounded by construction, so there is no token budget to tune and no repository that can inflate it.
+- **Never guess the trunk branch** (anthropics/claude-code#16767 is what guessing looks like). Upstream and ahead/behind come free from `git status --porcelain=v2 --branch`, and are a more precise answer to the same question.
+- **The repository root is shown**, because it is not always the workspace: a session started one directory too high silently reports a parent repository's state, and seeing the root is the only way you would notice.
+- **The endpoint is always 200**: no repository, no git binary and a timeout are states to render, not errors. Same rule as checkpointing.
+- **`GIT_OPTIONAL_LOCKS=0` is not an optimisation**: `git status` normally takes the index lock, and this runs while you may be running git in the same checkout. A status display that can make your own commit fail is worse than none.
+- **It does not run `git init`.** Outside a repository the prompt says to mention it once and not to initialise anything unasked. Codex's app offers to create one; its CLI refuses to start outside a repository — that half is not copied, because pi-go's shadow repo makes a non-git directory perfectly rewindable and refusing would be giving up a capability.
+- `-no-git-context` turns off the **injection**, not the **display**: someone who disabled it to save tokens has not asked to stop seeing their own branch. The injection is probed once per session (a system prompt that changes mid-session invalidates the cached prefix every turn), not per turn.
+- **Paths already dirty at session start are named to the model** (capped at 20 plus "and N more"), with one line saying what that means: these are not yours, do not stage them when committing. This is the single exception to counts-not-content, because the rule cannot be expressed in numbers. It closes the one hole the approval gate cannot: `git add -A` sweeps **your own unfinished work** into the agent's commit, and what the gate shows you is the command, not the list of what it will stage. By definition nothing the agent does later can join that set, so it is probed once, at the start.
+- **pi-go does not write to your repository.** Commits are made by the model through bash, and the default `standard` policy reviews bash — so **you are already approving every agent commit**. A commit endpoint would only move an existing capability to a new entrance and add a write path to protect.
+- **No `Co-Authored-By` attribution, and that is a decision rather than an omission.** It is still contested upstream (Claude Code has two open issues saying it cannot be turned off and permanently alters the user's history), and getting it wrong does not clean up (GitHub's contributor graph counts co-authors and is cached, so the AI lingers after a history rewrite); the Linux kernel bans AI-written commit messages outright. A project that wants attribution adds it with `commit.template` or a hook — that is the repository's decision, not the harness's.
+- The base prompt gained one line of generic discipline: **stage the paths you changed rather than everything, never bypass hooks with `--no-verify`, never rewrite history with amend, reset or force-push.** It depends on no git facts, so it survives `-no-git-context`.
 
 ### Session sidebar: rename and pin
 
@@ -1896,15 +2107,50 @@ Nine, all under `tools/`. The table below is the seven resident ones; the eighth
 
 | Tool | Args | Description |
 |---|---|---|
-| `read` | `path`, `offset?`, `limit?` | read a file; truncated past 2000 lines or 50KB with a hint to continue via `offset` |
+| `read` | `path` \| `paths[]`, `offset?`, `limit?` | read a file; truncated past 2000 lines or 50KB with a hint to continue via `offset`. `paths` reads several in one call (budget split, see below) |
 | `ls` | `path?`, `limit?` | list one directory level; directories carry `/`, dotfiles included, truncated at 500 entries or 50KB |
 | `find` | `pattern`, `path?`, `limit?` | find files by glob. With `/` it matches the relative path, otherwise the filename. Default 200 entries |
 | `grep` | `pattern`, `path?`, `include?`, `limit?` | search content with a Go regex; output `path:line:text`. Leading `(?i)` is case-insensitive. Skips binary and files over 8MB; default 100 matches |
 | `write` | `path`, `content` | write a file; auto-creates parent directories |
 | `edit` | `path`, `edits[{oldText,newText}]` | exact string replacement; `oldText` must match uniquely |
-| `bash` | `command`, `timeout?` | run a command; default 120s timeout; output keeps the last 2000 lines / 50KB. **Output streams while running**, see below |
+| `bash` | `command`, `workdir?`, `timeout?` | run a command; default 120s timeout; output keeps the last 2000 lines / 50KB. **Output streams while running**, see below. `workdir` changes where it runs, see below |
 
 **Args are validated against the schema before execution**, and before the approval gate — a call with a missing field cannot run no matter what you approve. The error names the missing field, lists every field the tool accepts, and on a misspelling gives a hint (`file_path` → "did you mean path"). Unknown fields are always tolerated: the model often adds harmless extra keys, and wasting a turn over that is not worth it.
+
+### `bash`'s `workdir`: the better answer than `cd x && …`
+
+Every call is a fresh `bash -c`, so neither `cd` nor environment variables carry over. The two major vendors answer this differently, and pi-go follows the second:
+
+- **Anthropic's Claude Code makes cwd persist.** After a `cd` in the main session, later Bash commands stay in that directory as long as it is inside the project directory or one added with `--add-dir`; leaving those resets to the project directory and appends `Shell cwd was reset to <dir>` to the result. Subagent sessions never inherit a directory change. `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1` turns the carry-over off. Environment variables still don't persist. ([Claude Code tools reference](https://code.claude.com/docs/en/tools-reference); content was rephrased for compliance with licensing restrictions)
+- **OpenAI's Codex doesn't persist and gives a `workdir` parameter instead**, alongside `command` and `timeout_ms`. It is even `required` — a consequence of the strict-schema rule that every property must be listed, not a judgement that a caller should always name a directory. ([Codex issue #524](https://github.com/openai/codex/issues/524), whose schema error exposes the shape)
+
+pi-go's bash is a fresh process per call already, so Codex's answer is the matching one:
+
+```json
+{"command": "make", "workdir": "sub"}
+```
+
+A relative path resolves against the working directory; an absolute one is used as given. **Not required**: that would put a redundant `"."` on every single call, and would make every existing transcript invalid against the schema.
+
+Three things worth stating plainly:
+
+- **It does not go through the path guard, deliberately.** bash never had a path restriction (the reasoning is in `tools/tool.go`), and confining `workdir` while `cd /etc` in the command string still works would be a restriction that reads like a boundary without being one — while refusing the case the parameter exists for, running a build in a checkout next door. bash's real boundary is the container.
+- **But it must go through the subagent guard.** The guard catches a `cd` by parsing an absolute target out of the command text, and `workdir` reaches the same place without ever appearing there. Left unchecked, adding the parameter would have handed a child a way out of its worktree that reads as an ordinary argument. `Guard.CheckDir` is that check, and its test runs the tool rather than calling the guard.
+- **It is part of the "always allow this command" key.** Before `workdir` existed, "always allow `go build ./...`" could only mean "in the session's directory", because there was nowhere else to run. Keying on the command alone would silently promote that click to "in any directory the agent names" — a widening the user was never shown and could not have intended. So the key is command + workdir; a grant made for the bare command doesn't cover a `workdir` call, and vice versa.
+
+A directory that doesn't exist, or that is a file, is reported by the tool rather than left to bash failing to start. The difference is real for the model: `chdir: no such file or directory` with exit code -1 describes the harness, while a message naming the resolved path and the base it was resolved against describes the mistake. When a command ran somewhere other than the default, `BashDetails.workdir` records the resolved absolute path and the UI shows it — only when it is not the default, because announcing the default on every call says nothing.
+
+### `read`'s `paths[]`: several files in one call
+
+```json
+{"paths": ["a.go", "b.go", "sub/c.go"]}
+```
+
+`path` and `paths` are mutually exclusive (`offset` / `limit` pair with `path` only). **The budget is divided, not repeated**: five files at the full ceiling each is five times the limit that exists to stop one tool result from swallowing the context window. One failed path does not fail the call — that would waste the very round trip the call was saving; only all of them failing returns an error.
+
+Worth recording: **both Anthropic's and OpenAI's read tools are single-file**, so `paths[]` is pi-go's own extension. Their first-party answer to "do more in one call" is on the shell side (Codex's `commands[]` array with a per-command outcome), and pi-go rejected that one because of the approval gate — see `docs/tool-batching-and-parallelism.md` §5.D.
+
+A multi-file read now has its own card: the file list with per-file line counts, truncation and failure marks, expandable to one file's content with syntax highlighting and line numbers. **Content is sliced at byte ranges the tool recorded, not parsed back out of the concatenated text.** The latter has a failure this must not have: a file whose own content includes a line reading `==> other.go <==` ends its section early and the remainder is credited to the next file — one file's fragment under another file's name, which is worse than showing nothing. The ranges are computed by the same code that writes the text, so they cannot drift from the format.
 
 **`bash` output streams while running**, so when `go test` runs for a minute you can tell whether it's running or stuck:
 

@@ -13,12 +13,17 @@ func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
-// killGroup signals the whole group. The negative pid is what makes it reach the
+// KillGroup signals the whole group. The negative pid is what makes it reach the
 // grandchildren; signalling cmd.Process alone would leave them running.
 //
 // SIGKILL rather than SIGTERM: the group is being cancelled, and a build tool
 // that traps SIGTERM to clean up would delay a stop the user already asked for.
-func killGroup(cmd *exec.Cmd) error {
+//
+// Exported because the web terminal needs the same thing: a pty's shell and the
+// dev server it launched are one group, and reaping the leader alone orphans the
+// rest. It used to inline its own syscall.Kill, which is one of the three
+// unguarded ones that kept the binary from building on Windows.
+func KillGroup(cmd *exec.Cmd) error {
 	if cmd.Process == nil {
 		return nil
 	}

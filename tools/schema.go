@@ -42,6 +42,15 @@ func GenerateSchema(typ reflect.Type) map[string]any {
 			"type": jsonTypeFromGo(field.Type),
 		}
 
+		// An array says nothing about what it holds without items, and a model
+		// filling an under-specified array has to guess. Emitted here so the
+		// reflected schema stays comparable to the hand-written one — see
+		// TestGenerateSchemaEquivalentHandwritten, which treats a mismatch in
+		// items as a difference.
+		if k := field.Type.Kind(); k == reflect.Slice || k == reflect.Array {
+			propSchema["items"] = itemSchema(field.Type.Elem())
+		}
+
 		// Add description if available
 		if desc := field.Tag.Get("description"); desc != "" {
 			propSchema["description"] = desc
@@ -97,6 +106,18 @@ func GenerateSchema(typ reflect.Type) map[string]any {
 		"properties": props,
 		"required":   required,
 	}
+}
+
+// itemSchema describes an array's element. A struct element recurses into the full
+// object schema; anything else is named by its JSON type.
+func itemSchema(elem reflect.Type) map[string]any {
+	if elem.Kind() == reflect.Ptr {
+		elem = elem.Elem()
+	}
+	if elem.Kind() == reflect.Struct {
+		return GenerateSchema(elem)
+	}
+	return map[string]any{"type": jsonTypeFromGo(elem)}
 }
 
 // jsonTypeFromGo maps Go types to JSON Schema types.

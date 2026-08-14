@@ -81,11 +81,14 @@ func (*Todo) Description() string {
 		"previous one.\n\n" +
 		"Use it when the work has three or more distinct steps, or the user asked for several " +
 		"things. Skip it for one step, for anything trivial, and for questions.\n\n" +
-		"Keep one task in_progress and update it as you go, not in a batch at the end. Mark a " +
-		"task completed only once it is really done, verification included; if it failed or " +
-		"you are stuck, mark it blocked and add an item for the blocker. A subagent reporting " +
-		"success is not completion on its own — an edit subagent hands back a commit nobody " +
-		"has applied yet."
+		"Keep one task in_progress and update it as you go, not in a batch at the end: write the " +
+		"list the moment a step finishes and the next one starts, so a reader always sees where " +
+		"the work actually is. Mark a task completed only once it is really done, verification " +
+		"included; if it failed or you are stuck, mark it blocked and add an item for the " +
+		"blocker. A subagent reporting success is not completion on its own — an edit subagent " +
+		"hands back a commit nobody has applied yet.\n\n" +
+		"Settle the list before your final answer: nothing may be left in_progress once you are " +
+		"finished, so the last step gets its own update rather than being left half-done."
 }
 
 // ExecutionMode is Parallel, and trivially so: the tool touches nothing. See the

@@ -5,6 +5,7 @@ import AnsiText from "./AnsiText.vue";
 import BashResult from "./tools/BashResult.vue";
 import EditResult from "./tools/EditResult.vue";
 import LsResult from "./tools/LsResult.vue";
+import ReadManyResult from "./tools/ReadManyResult.vue";
 import ReadResult from "./tools/ReadResult.vue";
 import SearchResult from "./tools/SearchResult.vue";
 import SubagentResult from "./tools/SubagentResult.vue";
@@ -17,12 +18,12 @@ import {
   isEditDetails,
   isLsDetails,
   isReadDetails,
+  isReadManyDetails,
   isSearchDetails,
   isSubagentDetails,
   isTodoDetails,
   isWriteDetails,
   matchSkillRead,
-  shortPath,
   summarizeArgs,
   type TimelineCall,
 } from "@/agent/timeline";
@@ -32,6 +33,8 @@ const props = defineProps<{
   runActive: boolean;
   skills?: { name: string; path: string }[];
   cwd?: string;
+  /** See TurnCard's prop of the same name; passed straight through to TodoResult. */
+  todoPinned?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -86,7 +89,7 @@ watch(
     <div class="line">
       <span class="dot" />
       <span class="name">{{ call.name }}</span>
-      <span class="args" :title="label">{{ shortPath(label, 72) }}</span>
+      <span class="args">{{ label }}</span>
       <span v-if="skillName" class="badge skill">skill {{ skillName }}</span>
       <span v-if="state === 'running'" class="badge">{{ t("toolCall.running") }}</span>
       <span v-else-if="state === 'gate'" class="badge warn">{{ t("toolCall.waitingApproval") }}</span>
@@ -146,6 +149,15 @@ watch(
         :details="details"
         @suggest="emit('suggest', $event)"
       />
+      <!-- After the single-file branch, matching the guards' own discrimination:
+           ReadManyDetails deliberately has no total_lines, so the two cannot both
+           match and the order is a statement of intent rather than a dependency. -->
+      <ReadManyResult
+        v-else-if="call.name === 'read' && isReadManyDetails(details)"
+        :result="call.result"
+        :details="details"
+        @suggest="emit('suggest', $event)"
+      />
       <LsResult
         v-else-if="call.name === 'ls' && isLsDetails(details)"
         :result="call.result"
@@ -166,6 +178,7 @@ watch(
         v-else-if="call.name === 'todo' && isTodoDetails(details)"
         :details="details"
         :superseded="call.superseded"
+        :pinned="todoPinned"
       />
       <CodeBlock v-else :code="call.result.text" />
     </div>
@@ -174,14 +187,17 @@ watch(
 
 <style scoped lang="scss">
 .call {
-  margin: 6px 0;
+  margin: 7px 0;
 }
 
+/* flex-start so a wrapped multi-line command keeps the dot, name and badges on
+   its first line instead of centring against the whole block. */
 .line {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
   font-size: 12px;
+  line-height: 1.5;
 }
 
 .dot {
@@ -190,6 +206,8 @@ watch(
   border-radius: 50%;
   background: var(--el-color-success);
   flex: 0 0 auto;
+  /* Optically centred on the first text line (12px × 1.5 ≈ 18px). */
+  margin-top: 6px;
 
   .running & {
     background: var(--el-color-primary);
@@ -216,35 +234,37 @@ watch(
 }
 
 .name {
-  font-family: ui-monospace, monospace;
+  font-family: var(--pg-mono);
   font-weight: 600;
-  color: var(--el-color-primary);
+  color: var(--el-text-color-primary);
 }
 
+/* Full text, wrapped, never elided: a truncated command hides what will run
+   (or what ran), and the one line it saves is not worth that. */
 .args {
-  font-family: ui-monospace, monospace;
-  color: var(--el-text-color-regular);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-family: var(--pg-mono);
+  color: var(--el-text-color-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-width: 0;
 }
 
 .badge {
   margin-left: auto;
   font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  background: var(--el-fill-color);
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--el-fill-color-light);
   color: var(--el-text-color-secondary);
   flex: 0 0 auto;
 
   &.warn {
-    background: color-mix(in srgb, var(--el-color-warning) 18%, transparent);
+    background: var(--el-color-warning-light-9);
     color: var(--el-color-warning);
   }
 
   &.bad {
-    background: color-mix(in srgb, var(--el-color-danger) 15%, transparent);
+    background: var(--el-color-danger-light-9);
     color: var(--el-color-danger);
   }
 
@@ -252,7 +272,7 @@ watch(
      so it reads as part of the call instead of as its status. */
   &.skill {
     margin-left: 0;
-    background: color-mix(in srgb, var(--el-color-success) 18%, transparent);
+    background: var(--el-color-success-light-9);
     color: var(--el-color-success);
   }
 }
@@ -274,21 +294,25 @@ watch(
    live in AnsiText; this box provides the dark shell. Colours match the settled
    CodeBlock terminal so the view does not change appearance when the call
    settles. */
+/* The terminal surface is its own token, not a fill: every skin keeps command
+   output on a dark block — that is the convention output is written for — and each
+   one borrows its own family's dark surface for it. See theme/build.ts. */
 .live {
   margin: 0;
   max-height: 300px;
   overflow: auto;
-  border-radius: 4px;
-  background: #1e1f22;
-  color: #d6d7db;
+  border-radius: 10px;
+  background: var(--pg-term-bg);
+  color: var(--pg-term-fg);
 }
 
 .error-text {
   font-size: 12px;
   color: var(--el-color-danger);
-  background: color-mix(in srgb, var(--el-color-danger) 7%, transparent);
-  border-radius: 4px;
-  padding: 6px 8px;
+  background: var(--el-color-danger-light-9);
+  border: 1px solid color-mix(in srgb, var(--el-color-danger) 18%, transparent);
+  border-radius: 8px;
+  padding: 7px 10px;
   margin-bottom: 6px;
   white-space: pre-wrap;
 }

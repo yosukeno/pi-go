@@ -8,13 +8,10 @@ import (
 
 // Provider is an OpenAI-compatible endpoint.
 //
-// The two below are compiled in, verified against the live service, and are what
-// pi-go uses with no configuration at all — a constant that is right beats a file
-// that can be wrong. What a file adds is the case a constant cannot cover: an
-// endpoint only you have. A local model server, a mirror, a gateway. Without one,
-// pi-go is usable with exactly two vendors and no amount of correctness in the
-// built-ins fixes that. See file.go, including why the file is read from the home
-// directory and nowhere else.
+// Every provider comes from ~/.pi-go/providers.json (see file.go, including why
+// the file is read from the home directory and nowhere else): this fork compiles
+// none in, so the file can define any endpoint — a vendor, a local model server,
+// a mirror, a gateway — and pi-go refuses to start without one.
 type Provider struct {
 	Name    string
 	BaseURL string
@@ -58,69 +55,40 @@ type Model struct {
 	Price *llm.Price
 }
 
-var providers = map[string]Provider{
-	// Kimi for Coding subscription endpoint. The pay-as-you-go platform
-	// (api.moonshot.cn/v1) rejects these keys with 401, so it is not a fallback.
-	"kimi": {
-		Name:       "kimi",
-		BaseURL:    "https://api.kimi.com/coding/v1",
-		KeyEnv:     "KIMI_API_KEY",
-		BaseURLEnv: "KIMI_BASE_URL",
-	},
-	// GLM Coding Plan endpoint. The generic /api/paas/v4 also accepts the key but
-	// bills differently, so the coding path is the correct one for this plan.
-	"zhipu": {
-		Name:       "zhipu",
-		BaseURL:    "https://open.bigmodel.cn/api/coding/paas/v4",
-		KeyEnv:     "ZHIPU_API_KEY",
-		BaseURLEnv: "ZHIPU_BASE_URL",
-	},
-}
+// No providers or models are compiled in: ~/.pi-go/providers.json is the single
+// source of truth (this fork's choice — upstream pi-go ships two built-in
+// endpoints so it works with no file at all). Load() refuses to start with an
+// empty catalog, so a missing file is an explained error here, not a silent
+// fallback to nothing.
+var providers = map[string]Provider{}
 
 // catalog lists the models worth exposing. Order matters: the first entry is the
-// default.
+// default unless the file names one explicitly.
 //
-// glm-5.2 leads because the kimi coding endpoint currently blackholes streaming
-// requests for k3 (non-streaming answers fine; verified 2026-08). pi-go always
-// streams, so a default of k3 hangs on the first prompt.
 // ContextWindow is load-bearing beyond display: -context-edit auto takes half of
 // it, and the browser's context gauge turns yellow and red at fractions of it. An
 // under-declared window therefore makes pi-go clear too early — paying cache misses
 // and re-reads — and advise starting a new session while most of the window is
-// still free. So these are checked against the endpoints rather than copied once.
-//
-// glm-5.2 was declared 200,000 here and that was wrong by a factor of five. Both
-// the vendor's own documentation and the model card state a 1M-token context, and a
-// probe against pi-go's actual endpoint (the coding plan, not the general API)
-// accepted and billed a 400,013-token prompt with finish_reason "stop" — so it is
-// certainly more than 200,000. MaxTokens is left at 16384, which is an output cap
-// rather than a window: the model permits 131,072, but a coding agent that emitted
-// that in one turn has gone wrong, and on kimi the output cap is charged against
-// the same limit as the prompt ("prompt tokens + max_tokens exceeds the model
-// specification").
-//
-// The kimi figures were confirmed exactly by the same probe: kimi-for-coding
-// rejected the same body with "Your request exceeded model token limit: 262144".
-var catalog = []Model{
-	{ID: "glm-5.2", Provider: "zhipu", Aliases: []string{"glm", "zhipu"}, ContextWindow: 1_048_576, MaxTokens: 16384},
-	{ID: "k3", Provider: "kimi", Aliases: []string{"kimi-k3", "kimi"}, ContextWindow: 1_048_576, MaxTokens: 16384},
-	{ID: "k3-256k", Provider: "kimi", ContextWindow: 262_144, MaxTokens: 16384},
-	{ID: "kimi-for-coding", Provider: "kimi", Aliases: []string{"k2.7"}, ContextWindow: 262_144, MaxTokens: 16384},
-	{ID: "kimi-for-coding-highspeed", Provider: "kimi", Aliases: []string{"k2.7-fast"}, ContextWindow: 262_144, MaxTokens: 16384},
-}
+// still free. So the figures in the shipped providers.json are checked against
+// the endpoints rather than copied once.
+var catalog = []Model{}
 
 // Catalog returns the known models in display order.
 func Catalog() []Model { return catalog }
 
-// defaultModel is empty until a config file names one, so that the built-in
-// default stays a property of catalog order rather than a second thing to keep in
-// sync with it.
+// defaultModel is empty until a config file names one, so that the default stays
+// a property of catalog order rather than a second thing to keep in sync with it.
 var defaultModel string
 
-// DefaultModel is the configured default, or the first catalog entry.
+// DefaultModel is the configured default, or the first catalog entry. Empty when
+// the catalog is empty — Load() refuses that state at startup, so "" here is a
+// test-time answer, not a runtime one.
 func DefaultModel() string {
 	if defaultModel != "" {
 		return defaultModel
+	}
+	if len(catalog) == 0 {
+		return ""
 	}
 	return catalog[0].ID
 }

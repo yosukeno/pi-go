@@ -344,12 +344,28 @@ func (s *Session) RewindPreview(messageID string) (changes []FileChange, availab
 // from the fork. A run in flight blocks it, the same way it blocks SetModel:
 // the loop would go on appending to a branch nobody can see.
 //
-// files asks for the workspace to be restored to the checkpoint taken when
-// that message was sent — modified files go back, deleted ones return, ones
-// created afterwards are removed. The restore runs before the fork and under
-// the same lock, so a rewind is all-or-nothing: a failed restore leaves the
-// conversation alone, and no run can slip into the gap between the two.
-func (s *Session) Rewind(messageID string, files bool) error {
+// mode chooses what the rewind acts on. RewindBoth restores the workspace to the
+// checkpoint taken when that message was sent — modified files go back, deleted
+// ones return, ones created afterwards are removed — and then forks. The restore
+// runs before the fork and under the same lock, so that rewind is all-or-nothing:
+// a failed restore leaves the conversation alone, and no run can slip into the
+// gap between the two.
+//
+// RewindFiles is not a weaker RewindBoth, it is a different operation: put the
+// files back, leave the conversation where it is. Claude Code's rewind menu and
+// Roo's restore dialog both offer it, and the reason is that the two things a
+// person wants to undo are not always the same thing — a turn whose reasoning was
+// useful but whose edit was wrong is the common case. All-or-nothing still holds
+// within each mode; it was never a claim that the two halves cannot be asked for
+// separately.
+//
+// paths narrows a file restore to a subset. Empty means the whole checkpoint.
+func (s *Session) Rewind(messageID string, mode RewindMode, paths []string) error {
+	switch mode {
+	case RewindChat, RewindFiles, RewindBoth:
+	default:
+		return fmt.Errorf("%w: %q (want chat, files or both)", errRewindMode, mode)
+	}
 	k, ok := s.hub.UserMessageOrdinal(messageID)
 	if !ok {
 		return errMessageUnknown
@@ -367,18 +383,28 @@ func (s *Session) Rewind(messageID string, files bool) error {
 		s.mu.Unlock()
 		return errMessageUnknown
 	}
-	if files {
+	if mode == RewindFiles || mode == RewindBoth {
 		if s.mgr.shadow == nil {
 			s.mu.Unlock()
 			return errFilesUnavailable
 		}
-		if err := s.mgr.shadow.Restore(point); err != nil {
+		if err := s.mgr.shadow.RestorePaths(point, paths); err != nil {
 			s.mu.Unlock()
 			if errors.Is(err, errNoCheckpoint) {
 				return errFilesUnavailable
 			}
 			return err
 		}
+	}
+	if mode == RewindFiles {
+		// Nothing below applies: the transcript did not move, so the agent's
+		// messages, the usage totals and the persistence baselines are all still
+		// correct. Touching them here would be the bug this early return exists
+		// to avoid — SetMessages on an unchanged history would re-append the
+		// whole branch on the next finish().
+		s.lastUsed = time.Now()
+		s.mu.Unlock()
+		return nil
 	}
 	if err := s.store.Fork(point); err != nil {
 		s.mu.Unlock()

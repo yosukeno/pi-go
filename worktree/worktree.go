@@ -34,7 +34,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 // RefPrefix is where a finished worktree's commit is pinned.
@@ -86,6 +85,23 @@ func Open(dir string) (*Repo, error) {
 		return nil, err
 	}
 	return &Repo{Root: canonical(root), GitDir: canonical(gitDir)}, nil
+}
+
+// Available reports whether dir can host an isolated worktree at all.
+//
+// It exists so a caller can find out once, at startup, instead of discovering it
+// on the first delegation. Open's refusal is correct but it arrives late: by then a
+// model has already spent a turn asking for something this workspace cannot do,
+// and it will spend another one asking again, because the error names a remedy
+// (`git init`) that the model has no way to carry out.
+//
+// One `git rev-parse` per session, so the cost is not worth caching. It is a
+// question about the directory rather than about the repository, which is why it
+// returns a bool and not the *Repo — a caller that wants the repository should
+// call Open and read the error.
+func Available(dir string) bool {
+	_, err := Open(dir)
+	return err == nil
 }
 
 // Tree is one isolated worktree.
@@ -252,8 +268,19 @@ func (t *Tree) Verify() error {
 	if err != nil {
 		return err
 	}
+	// Separators are normalised before comparing, and on Windows that is the
+	// difference between this check working and rejecting every worktree git
+	// creates: git writes the pointer with forward slashes ("gitdir: C:/…/worktrees/
+	// sub1234") while filepath.Join builds it with backslashes, so a byte comparison
+	// failed on a directory nobody had touched. It is a no-op on unix.
+	//
+	// Nothing is weakened. On Windows `/` and `\` name the same path, so treating
+	// them as equal is what "points at the same place" means there; the rewrite this
+	// check exists to catch has to point somewhere else, which no amount of
+	// separator juggling turns into an equal string.
 	want := "gitdir: " + filepath.Join(t.Repo.GitDir, "worktrees", t.ID)
-	if got := strings.TrimSpace(string(raw)); got != want {
+	got := strings.TrimSpace(string(raw))
+	if normalizePointer(got) != normalizePointer(want) {
 		return fmt.Errorf("worktree %s: .git points at %q, want %q — it has been "+
 			"rewritten, so git commands run here would act on the main checkout",
 			t.ID, got, want)
@@ -279,6 +306,18 @@ func (t *Tree) Verify() error {
 			t.ID, t.Repo.Root)
 	}
 	return nil
+}
+
+// normalizePointer puts a `.git` pointer line into one separator convention so two
+// spellings of the same path compare equal. Only the path half is touched, so the
+// "gitdir: " prefix still has to be present and spelled correctly.
+func normalizePointer(line string) string {
+	const prefix = "gitdir: "
+	path, ok := strings.CutPrefix(line, prefix)
+	if !ok {
+		return line
+	}
+	return prefix + filepath.Clean(filepath.FromSlash(path))
 }
 
 // carryDirty replays the parent's uncommitted changes to tracked files.
@@ -761,15 +800,10 @@ func parsePID(reason string) int {
 	return n
 }
 
-// alive reports whether a process exists. Signal 0 is the portable "does this pid
-// exist" question; EPERM means it exists and belongs to someone else.
-func alive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
-}
+// alive is per-platform; see alive_unix.go and alive_other.go. It lives outside
+// this file because asking "does this pid exist" needs signal 0, which does not
+// exist everywhere, and one unguarded syscall.Kill kept the whole binary from
+// building on Windows.
 
 // notASymlink refuses a path that exists and is a symlink. A path that does not
 // exist yet is fine: Add is about to create it as a directory.
